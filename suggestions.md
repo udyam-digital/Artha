@@ -2,18 +2,24 @@
 
 ## Architecture
 
-- Move the remaining live-Kite parsing helpers from `tools.py` into a dedicated `kite_parsing.py` module. `tools.py` still owns transport, auth helpers, payload normalization, and Anthropic tool definitions, which is broader than one module should carry.
-- Keep `agent.py` focused on portfolio-level report generation and resist adding more orchestration there. The new `research.py` should stay the only place that manages per-holding deep-research workers.
-- Consider adding a `service/` package if Artha grows further. Right now `kite_runtime.py`, `research.py`, and `snapshot_store.py` are enough, but a package boundary will become useful if reporting or tax-aware workflows expand.
+- Factor the live portfolio pipeline into a `services/` package next. `orchestrator.py`, `analyst.py`, `research.py`, and `kite_runtime.py` now form a clear application-service layer and will become easier to evolve if they share a package boundary.
+- Introduce a small `HoldingContext` model for orchestrator-to-analyst handoff. That will make the boundary explicit for 52-week context, target-weight drift, and future additions like holding period or thesis notes.
+- Add a dedicated `rebalance_merge.py` helper if verdict-to-action policy becomes more nuanced. The current merge logic is still compact, but it is now a business rule layer rather than a pure formatting concern.
 
 ## Reliability
 
-- Add a lightweight snapshot manifest that records the exact auth artifact, sync timestamp, equity snapshot path, and MF snapshot path used for each generated report. That will improve auditability.
-- Add retry/backoff around Anthropic requests in both `agent.py` and `research.py`. Network or rate-limit failures should degrade to partial output rather than fail an entire long run.
-- Add a small integration smoke test layer behind an opt-in env flag so hosted Kite MCP and Anthropic connectivity can be validated without changing unit-test purity.
+- Add retry with jittered backoff around all Anthropic calls in `analyst.py`, `orchestrator.py`, and `research.py`. Parallel analyst fan-out increases exposure to transient rate limits.
+- Persist a run manifest per portfolio analysis that captures the synced snapshot paths, per-holding price-context payloads, elapsed time, and final verdict count. That will materially improve auditability.
+- Cache recent price-history context and recent analyst verdicts for a short TTL. That will reduce redundant Kite and Anthropic load during repeated runs on the same day.
+
+## Observability
+
+- Emit one structured log event per analyst completion with symbol, duration, verdict, confidence, action, and error state. That will make the parallel run easy to inspect in production-like environments.
+- Track orchestrator-level counters for analyzed equities, excluded ETFs, MF holdings, analyst failures, and total synthesis time.
+- Add a lightweight timing breakdown to the saved report payload or sidecar artifact so portfolio sync, price-context fetch, analyst fan-out, and final synthesis can be compared over time.
 
 ## Research Quality
 
-- Add a dedicated `skills/mf_analysis.md` file once the MF workflow stabilizes. Keeping fund-research guidance in a markdown skill, instead of inline prompt text, will make behavior easier to evolve and review.
-- Add source-domain heuristics for fund research so AMC factsheets, scheme pages, and fund-disclosure documents are prioritized over low-signal aggregator pages.
-- For equity research, consider storing a short structured evidence log per holding, not just the final artifact. It will make Artha’s conclusions easier to inspect when recommendations change over time.
+- Add source-domain ranking for analyst sub-agents so exchange filings, investor presentations, earnings releases, and Screener evidence are preferred over generic market-news summaries.
+- Persist an evidence log per `StockVerdict`, not just the final source URLs. A short structured trail of what changed the verdict will make recommendation drift much easier to audit.
+- Add a dedicated `skills/mf_analysis.md` if MF verdicting is ever introduced, but keep MF analysis informational unless there is an explicit product decision to expand scope.

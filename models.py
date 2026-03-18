@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,15 +52,33 @@ class MFSnapshot(StrictModel):
     holdings: list[MFHolding]
 
 
-class StockAnalysis(StrictModel):
+class Verdict(str, Enum):
+    STRONG_BUY = "STRONG_BUY"
+    BUY = "BUY"
+    HOLD = "HOLD"
+    SELL = "SELL"
+    STRONG_SELL = "STRONG_SELL"
+
+
+class StockVerdict(StrictModel):
     tradingsymbol: str
     company_name: str
+    verdict: Verdict
+    confidence: Literal["HIGH", "MEDIUM", "LOW"]
+    current_price: float
+    buy_price: float
+    pnl_pct: float
+    thesis_intact: bool
     bull_case: str
     bear_case: str
     what_to_watch: str
     red_flags: list[str] = Field(default_factory=list)
-    data_freshness: str
-    sources: list[str] = Field(default_factory=list)
+    rebalance_action: Literal["BUY", "SELL", "HOLD"]
+    rebalance_rupees: float
+    rebalance_reasoning: str
+    data_sources: list[str] = Field(default_factory=list)
+    analysis_duration_seconds: float
+    error: str | None = None
 
 
 class RebalancingAction(StrictModel):
@@ -77,8 +96,7 @@ class RebalancingAction(StrictModel):
 class PortfolioReport(StrictModel):
     generated_at: datetime
     portfolio_snapshot: PortfolioSnapshot
-    analyses: list[StockAnalysis] = Field(default_factory=list)
-    rebalancing_actions: list[RebalancingAction] = Field(default_factory=list)
+    verdicts: list[StockVerdict] = Field(default_factory=list)
     portfolio_summary: str
     total_buy_required: float
     total_sell_required: float

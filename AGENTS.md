@@ -39,6 +39,7 @@ If report parsing fails, the app falls back to a rebalance-oriented report with 
 ```bash
 .venv/bin/python main.py kite-login
 .venv/bin/python main.py kite-sync
+.venv/bin/python main.py rebalance
 .venv/bin/python main.py holdings
 .venv/bin/python main.py run
 .venv/bin/python main.py run --ticker KPITTECH

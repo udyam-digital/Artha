@@ -90,8 +90,7 @@ class ArthaAgent:
         return PortfolioReport(
             generated_at=datetime.now(timezone.utc),
             portfolio_snapshot=snapshot,
-            analyses=[],
-            rebalancing_actions=actions,
+            verdicts=[],
             portfolio_summary=raw_text or "Artha could not parse a valid final JSON response.",
             total_buy_required=sum(a.rupee_amount for a in actions if a.action == "BUY"),
             total_sell_required=sum(a.rupee_amount for a in actions if a.action == "SELL"),

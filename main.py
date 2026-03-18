@@ -4,15 +4,20 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent import ArthaAgent
+from anthropic import AsyncAnthropic
+
+from analyst import analyse_stock
 from config import configure_logging, get_settings
 from kite_runtime import KiteSyncResult, sync_kite_data
-from models import PortfolioReport, PortfolioSnapshot, ResearchDigest
-from rebalance import calculate_rebalancing_actions
+from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
+from orchestrator import run_full_analysis
+from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from research import DeepResearchOrchestrator
+from snapshot_store import load_latest_portfolio_snapshot
 from tools import ToolExecutionError
 
 logger = logging.getLogger(__name__)
@@ -22,7 +27,37 @@ def format_rupees(amount: float) -> str:
     return f"\u20b9{amount:,.0f}"
 
 
-def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> PortfolioReport:
+def _verdict_to_action_text(verdict: StockVerdict) -> str:
+    if verdict.rebalance_action == "HOLD":
+        return "HOLD —"
+    return f"{verdict.rebalance_action} {format_rupees(verdict.rebalance_rupees)}"
+
+
+def _thesis_text(verdict: StockVerdict) -> str:
+    return "✓ Intact" if verdict.thesis_intact else "✗ Weak"
+
+
+def _render_verdict_rows(verdicts: list[StockVerdict]) -> list[str]:
+    header = "┌─────────────┬─────────────┬──────────┬────────┬──────────────────┐"
+    title = "│ Stock       │ Verdict     │ Thesis   │ P&L%   │ Action           │"
+    divider = "├─────────────┼─────────────┼──────────┼────────┼──────────────────┤"
+    footer = "└─────────────┴─────────────┴──────────┴────────┴──────────────────┘"
+    rows = [header, title, divider]
+    for verdict in verdicts:
+        pnl_text = f"{verdict.pnl_pct:+.0f}%"
+        rows.append(
+            "│ "
+            f"{verdict.tradingsymbol:<11} │ "
+            f"{verdict.verdict.value:<11} │ "
+            f"{_thesis_text(verdict):<8} │ "
+            f"{pnl_text:<6} │ "
+            f"{_verdict_to_action_text(verdict):<16} │"
+        )
+    rows.append(footer)
+    return rows
+
+
+def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> tuple[PortfolioReport, list[RebalancingAction]]:
     actions = calculate_rebalancing_actions(
         holdings=snapshot.holdings,
         total_value=snapshot.total_value,
@@ -33,65 +68,108 @@ def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> PortfolioReport:
         "Fundamental analysis was skipped, so actions are based only on drift versus target weights. "
         "Review tax context and thesis quality before acting on any sell recommendation."
     )
-    return PortfolioReport(
+    report = PortfolioReport(
         generated_at=datetime.now(timezone.utc),
         portfolio_snapshot=snapshot,
-        analyses=[],
-        rebalancing_actions=actions,
+        verdicts=[],
         portfolio_summary=summary,
         total_buy_required=sum(action.rupee_amount for action in actions if action.action == "BUY"),
         total_sell_required=sum(action.rupee_amount for action in actions if action.action == "SELL"),
         errors=[],
     )
+    return report, actions
 
 
 def print_report(report: PortfolioReport) -> None:
     timestamp = report.generated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    holdings_count = len(report.portfolio_snapshot.holdings)
-    print("╔══════════════════════════════╗")
-    print("║  ARTHA PORTFOLIO REPORT      ║")
-    print(f"║  {timestamp:<26}║")
-    print("╚══════════════════════════════╝")
+    equity_count = len(report.verdicts)
+    etf_count = len(
+        [holding for holding in report.portfolio_snapshot.holdings if holding.tradingsymbol in PASSIVE_INSTRUMENTS]
+    )
+    print("╔══════════════════════════════════════╗")
+    print("║  ARTHA PORTFOLIO REPORT              ║")
+    print(f"║  {timestamp:<36}║")
+    print("╚══════════════════════════════════════╝")
     print()
     print("PORTFOLIO SNAPSHOT")
     print(f"Total Value:    {format_rupees(report.portfolio_snapshot.total_value)}")
     print(f"Available Cash: {format_rupees(report.portfolio_snapshot.available_cash)}")
-    print(f"Holdings:       {holdings_count} stocks")
+    print(f"Equity stocks:  {equity_count} | ETFs: {etf_count} (excluded from analysis)")
     print()
-    print("REBALANCING ACTIONS")
-    if report.rebalancing_actions:
-        for action in report.rebalancing_actions:
-            if action.action == "SELL":
-                prefix = "🔴 SELL"
-                amount = format_rupees(action.rupee_amount)
-            elif action.action == "BUY":
-                prefix = "🟢 BUY "
-                amount = format_rupees(action.rupee_amount)
-            else:
-                prefix = "⚪ HOLD"
-                amount = "—"
-            print(
-                f"{prefix:<8} {action.tradingsymbol:<12} {amount:<10} "
-                f"({action.current_weight_pct:.1f}% → {action.target_weight_pct:.1f}%)  {action.urgency}"
-            )
+    print("ANALYST VERDICTS")
+    if report.verdicts:
+        for line in _render_verdict_rows(report.verdicts):
+            print(line)
     else:
-        print("No actionable positions.")
+        print("No analyst verdicts in this run.")
     print()
-    print("ANALYSIS HIGHLIGHTS")
-    if report.analyses:
-        for analysis in report.analyses:
-            flag_text = ", ".join(analysis.red_flags) if analysis.red_flags else "None identified"
-            print(f"{analysis.tradingsymbol}: {analysis.bull_case} | Risk: {flag_text}")
-    else:
-        print("No fundamental analysis in this run.")
+    print("REBALANCING SUMMARY")
+    print(f"Total to sell:  {format_rupees(report.total_sell_required)}")
+    print(f"Total to buy:   {format_rupees(report.total_buy_required)}")
     print()
     print("PORTFOLIO SUMMARY")
     print(report.portfolio_summary)
-    if report.errors:
-        print()
-        print("ERRORS")
-        for error in report.errors:
-            print(f"- {error}")
+
+
+def print_rebalance_report(report: PortfolioReport, actions: list[RebalancingAction]) -> None:
+    timestamp = report.generated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    print("╔══════════════════════════════════════╗")
+    print("║  ARTHA REBALANCE REPORT              ║")
+    print(f"║  {timestamp:<36}║")
+    print("╚══════════════════════════════════════╝")
+    print()
+    print("PORTFOLIO SNAPSHOT")
+    print(f"Total Value:    {format_rupees(report.portfolio_snapshot.total_value)}")
+    print(f"Available Cash: {format_rupees(report.portfolio_snapshot.available_cash)}")
+    print()
+    print("REBALANCING ACTIONS")
+    if not actions:
+        print("No actionable positions.")
+    for action in actions:
+        amount = format_rupees(action.rupee_amount) if action.action != "HOLD" else "—"
+        print(
+            f"{action.action:<4} {action.tradingsymbol:<12} {amount:<10} "
+            f"({action.current_weight_pct:.1f}% → {action.target_weight_pct:.1f}%)  {action.urgency}"
+        )
+    print()
+    print("PORTFOLIO SUMMARY")
+    print(report.portfolio_summary)
+
+
+def print_single_verdict(verdict: StockVerdict) -> None:
+    print("STOCK VERDICT")
+    print(f"Stock:                {verdict.tradingsymbol} ({verdict.company_name})")
+    print(f"Verdict:              {verdict.verdict.value}")
+    print(f"Confidence:           {verdict.confidence}")
+    print(f"Thesis Intact:        {'Yes' if verdict.thesis_intact else 'No'}")
+    print(f"Current Price:        {format_rupees(verdict.current_price)}")
+    print(f"Buy Price:            {format_rupees(verdict.buy_price)}")
+    print(f"P&L %:                {verdict.pnl_pct:+.1f}%")
+    print(f"Action:               {_verdict_to_action_text(verdict)}")
+    print(f"Bull Case:            {verdict.bull_case}")
+    print(f"Bear Case:            {verdict.bear_case}")
+    print(f"What To Watch:        {verdict.what_to_watch}")
+    print(f"Rebalance Reasoning:  {verdict.rebalance_reasoning}")
+    print(f"Sources:              {', '.join(verdict.data_sources) if verdict.data_sources else 'None'}")
+    print(f"Duration:             {verdict.analysis_duration_seconds:.1f}s")
+    if verdict.error:
+        print(f"Error:                {verdict.error}")
+
+
+def build_standalone_holding(symbol: str, exchange: str = "NSE") -> Holding:
+    return Holding(
+        tradingsymbol=symbol.upper(),
+        exchange=exchange.upper(),
+        quantity=0,
+        average_price=0.0,
+        last_price=0.0,
+        current_value=0.0,
+        current_weight_pct=0.0,
+        target_weight_pct=0.0,
+        pnl=0.0,
+        pnl_pct=0.0,
+        instrument_token=0,
+    )
 
 
 def print_holdings(snapshot: PortfolioSnapshot) -> None:
@@ -157,17 +235,79 @@ async def handle_run(args: argparse.Namespace) -> int:
     if args.rebalance_only:
         sync_result = await sync_kite_data(settings=settings)
         snapshot = sync_result.portfolio_snapshot
-        report = build_rebalance_only_report(snapshot)
-    else:
-        sync_result = await sync_kite_data(settings=settings)
-        agent = ArthaAgent(settings=settings)
-        report = await agent.run(
-            ticker=args.ticker,
-            prefetched_snapshot=sync_result.portfolio_snapshot,
+        report, actions = build_rebalance_only_report(snapshot)
+        output_path = save_report(report, settings.reports_dir)
+        print_rebalance_report(report, actions)
+        print()
+        print(f"JSON report saved to: {output_path}")
+        return 0
+
+    if args.ticker:
+        snapshot: PortfolioSnapshot | None = None
+        try:
+            snapshot = load_latest_portfolio_snapshot(settings)
+        except Exception:
+            snapshot = None
+
+        holding = None
+        if snapshot is not None:
+            holding = next(
+                (
+                    item
+                    for item in snapshot.holdings
+                    if item.tradingsymbol == args.ticker.upper() and item.tradingsymbol not in PASSIVE_INSTRUMENTS
+                ),
+                None,
+            )
+        if holding is None:
+            holding = build_standalone_holding(args.ticker, exchange=getattr(args, "exchange", "NSE"))
+            logger.info(
+                "Running standalone analyst mode for %s on %s without portfolio context",
+                holding.tradingsymbol,
+                holding.exchange,
+            )
+
+        skills_content = (Path("skills") / "analyst_prompt.md").read_text(encoding="utf-8")
+        verdict = await analyse_stock(
+            holding=holding,
+            portfolio_total_value=snapshot.total_value if snapshot is not None else 0.0,
+            price_context={"52w_high": "N/A", "52w_low": "N/A", "current_vs_52w_high_pct": "N/A"},
+            skills_content=skills_content,
+            client=AsyncAnthropic(api_key=settings.anthropic_api_key),
+            config=settings,
+        )
+        print_single_verdict(verdict)
+        return 0
+
+    started = time.perf_counter()
+
+    def progress_callback(completed: int, total: int, verdict: StockVerdict) -> None:
+        print(
+            f"[{completed}/{total}] {verdict.tradingsymbol:<10} "
+            f"✓ {verdict.verdict.value:<9} ({verdict.analysis_duration_seconds:.1f}s)"
         )
 
+    report = await run_full_analysis(settings, progress_callback=progress_callback)
+
     output_path = save_report(report, settings.reports_dir)
+    print()
     print_report(report)
+    print()
+    print(
+        f"Completed in {time.perf_counter() - started:.1f}s | "
+        f"{len(report.verdicts)} analysts | {len(report.errors)} errors"
+    )
+    print()
+    print(f"JSON report saved to: {output_path}")
+    return 0
+
+
+async def handle_rebalance() -> int:
+    settings = get_settings()
+    snapshot = load_latest_portfolio_snapshot(settings)
+    report, actions = build_rebalance_only_report(snapshot)
+    output_path = save_report(report, settings.reports_dir)
+    print_rebalance_report(report, actions)
     print()
     print(f"JSON report saved to: {output_path}")
     return 0
@@ -207,15 +347,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Full portfolio analysis and rebalancing report")
     run_parser.add_argument("--ticker", help="Run a single-stock deep dive only")
+    run_parser.add_argument("--exchange", default="NSE", help="Exchange for standalone analyst mode, default NSE")
     run_parser.add_argument(
         "--rebalance-only",
         action="store_true",
-        help="Skip fundamental analysis and compute only rebalancing actions",
+        help="Skip fundamental analysis and compute only rebalancing actions after a fresh sync",
     )
 
     subparsers.add_parser("holdings", help="Print the current holdings table without an LLM call")
     subparsers.add_parser("kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot")
     subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
+    subparsers.add_parser("rebalance", help="Generate a rebalancing report from the latest saved local equity snapshot")
     subparsers.add_parser("research", help="Run deep web research on the latest saved equity and MF snapshots")
     return parser
 
@@ -235,6 +377,8 @@ async def async_main() -> int:
             return await handle_kite_login()
         if args.command == "kite-sync":
             return await handle_kite_sync()
+        if args.command == "rebalance":
+            return await handle_rebalance()
         if args.command == "research":
             return await handle_research()
         parser.error("Unknown command")

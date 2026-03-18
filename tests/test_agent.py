@@ -2,6 +2,7 @@ from pathlib import Path
 
 from agent import ArthaAgent
 from config import Settings
+from models import PortfolioSnapshot
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -38,3 +39,15 @@ def test_parse_final_output_falls_back_without_tags(tmp_path: Path) -> None:
     report = agent._parse_final_output("not valid output", snapshot=None, errors=[])
     assert report.portfolio_summary == "not valid output"
     assert report.errors
+
+
+def test_fallback_report_uses_verdicts_field(tmp_path: Path) -> None:
+    agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=1000.0,
+        available_cash=0.0,
+        holdings=[],
+    )
+    report = agent._fallback_report("summary", snapshot=snapshot, errors=[])
+    assert report.verdicts == []

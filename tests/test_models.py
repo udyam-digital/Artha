@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from models import Holding, PortfolioReport, PortfolioSnapshot
+from models import Holding, PortfolioReport, PortfolioSnapshot, StockVerdict
 
 
 def test_holding_validation() -> None:
@@ -35,11 +35,30 @@ def test_portfolio_report_serialization() -> None:
         available_cash=100.0,
         holdings=[],
     )
+    verdict = StockVerdict(
+        tradingsymbol="HDFCBANK",
+        company_name="HDFC Bank",
+        verdict="HOLD",
+        confidence="MEDIUM",
+        current_price=120.0,
+        buy_price=100.0,
+        pnl_pct=20.0,
+        thesis_intact=True,
+        bull_case="Strong franchise.",
+        bear_case="Margin pressure.",
+        what_to_watch="Loan growth",
+        red_flags=[],
+        rebalance_action="HOLD",
+        rebalance_rupees=0.0,
+        rebalance_reasoning="Sizing is appropriate.",
+        data_sources=["https://example.com"],
+        analysis_duration_seconds=2.5,
+        error=None,
+    )
     report = PortfolioReport(
         generated_at=datetime.now(timezone.utc),
         portfolio_snapshot=snapshot,
-        analyses=[],
-        rebalancing_actions=[],
+        verdicts=[verdict],
         portfolio_summary="Summary",
         total_buy_required=0.0,
         total_sell_required=0.0,
@@ -47,3 +66,23 @@ def test_portfolio_report_serialization() -> None:
     )
     restored = PortfolioReport.model_validate_json(report.model_dump_json())
     assert restored == report
+
+
+def test_legacy_report_fields_are_rejected() -> None:
+    snapshot = PortfolioSnapshot(
+        fetched_at=datetime.now(timezone.utc),
+        total_value=1000.0,
+        available_cash=0.0,
+        holdings=[],
+    )
+    with pytest.raises(ValidationError):
+        PortfolioReport(
+            generated_at=datetime.now(timezone.utc),
+            portfolio_snapshot=snapshot,
+            verdicts=[],
+            analyses=[],
+            portfolio_summary="Summary",
+            total_buy_required=0.0,
+            total_sell_required=0.0,
+            errors=[],
+        )
