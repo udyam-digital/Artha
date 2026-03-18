@@ -33,6 +33,7 @@ def make_settings(tmp_path: Path) -> Settings:
         REPORTS_DIR=str(tmp_path / "reports"),
         KITE_DATA_DIR=str(tmp_path / "kite"),
         MODEL="claude-sonnet-4-6",
+        ANALYST_MODEL="claude-haiku-4-5",
     )
 
 
@@ -171,6 +172,26 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
     assert (tmp_path / "data" / "companies" / "KPITTECH.json").exists()
+
+
+async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
+    client = FakeAnthropicClient(
+        [
+            SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text=make_report_card_code("KPITTECH"))],
+            )
+        ]
+    )
+    await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={},
+        skills_content="system",
+        client=client,  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    assert client.calls[0]["model"] == "claude-haiku-4-5"
 
 
 async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:

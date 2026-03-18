@@ -42,6 +42,7 @@ def make_settings(tmp_path: Path) -> Settings:
         REPORTS_DIR=str(tmp_path / "reports"),
         KITE_DATA_DIR=str(tmp_path / "kite"),
         MODEL="claude-sonnet-4-6",
+        ANALYST_MODEL="claude-haiku-4-5",
     )
 
 
@@ -187,3 +188,4 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     assert report.total_sell_required == 0.0
     assert progress[-1][0] == 2
     assert fake_summary_client.calls[0].get("tools") is None
+    assert fake_summary_client.calls[0]["model"] == "claude-sonnet-4-6"

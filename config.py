@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = Field(alias="ANTHROPIC_API_KEY")
     model: str = Field(default="claude-sonnet-4-6", alias="MODEL")
+    analyst_model: str = Field(default="claude-haiku-4-5", alias="ANALYST_MODEL")
     max_tokens: int = Field(default=8096, alias="MAX_TOKENS")
     max_iterations: int = Field(default=10, alias="MAX_ITERATIONS")
     reports_dir: Path = Field(default=ROOT_DIR / "reports", alias="REPORTS_DIR")

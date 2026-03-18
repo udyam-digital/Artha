@@ -5,6 +5,7 @@
 - Factor the live portfolio pipeline into a `services/` package next. `orchestrator.py`, `analyst.py`, `research.py`, and `kite_runtime.py` now form a clear application-service layer and will become easier to evolve if they share a package boundary.
 - Introduce a small `HoldingContext` model for orchestrator-to-analyst handoff. That will make the boundary explicit for 52-week context, target-weight drift, and future additions like holding period or thesis notes.
 - Add a dedicated `rebalance_merge.py` helper if verdict-to-action policy becomes more nuanced. The current merge logic is still compact, but it is now a business rule layer rather than a pure formatting concern.
+- Keep model routing explicit by role. The current `MODEL` plus `ANALYST_MODEL` split is the right pattern; if research costs stay high, add a separate `RESEARCH_MODEL` instead of overloading one global model knob.
 
 ## Reliability
 

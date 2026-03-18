@@ -307,7 +307,7 @@ async def analyse_stock(
     try:
         for _ in range(MAX_ANALYST_ITERATIONS):
             response = await client.messages.create(
-                model=config.model,
+                model=config.analyst_model,
                 max_tokens=config.max_tokens,
                 system=skills_content,
                 messages=messages,

@@ -1,6 +1,6 @@
 # Artha
 
-Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, connects to Zerodha/Kite through an MCP server configured in `.env`, and now runs one parallel analyst sub-agent per eligible equity holding before synthesizing a final portfolio report.
+Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, connects to Zerodha/Kite through an MCP server configured in `.env`, runs one parallel analyst sub-agent per eligible equity holding on Claude Haiku, and keeps the main Artha synthesis path on Claude Sonnet.
 
 ## Prerequisites
 
@@ -25,6 +25,13 @@ KITE_MCP_ARGS=[]
 KITE_MCP_ENV_JSON={}
 KITE_MCP_TIMEOUT_SECONDS=30
 KITE_DATA_DIR=./data/kite
+```
+
+Model routing in `.env`:
+
+```bash
+MODEL=claude-sonnet-4-6
+ANALYST_MODEL=claude-haiku-4-5
 ```
 
 Authenticate and sync fresh snapshots:
@@ -54,7 +61,7 @@ Supported flows:
 - `kite-login`: authenticate a live hosted Kite MCP session in the browser
 - `kite-sync`: fetch fresh equity and MF snapshots and persist them locally
 - `rebalance`: generate a math-only rebalancing report from the latest saved local equity snapshot, with no LLM call
-- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, builds per-stock analyst report cards in parallel, converts them into rebalancing verdicts, and synthesizes a final portfolio report
+- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, builds per-stock analyst report cards in parallel on Claude Haiku, converts them into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet
 - `run --ticker KPITTECH`: runs one focused analyst sub-agent and saves its structured report card under `data/companies/KPITTECH.json`
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
@@ -67,11 +74,11 @@ Supported flows:
 1. Sync live equity holdings, MF holdings, cash, and profile from Kite
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch 52-week price context once per analyzable equity holding
-4. Launch one analyst sub-agent per holding with native `web_search` only, bounded by `asyncio.Semaphore(5)`
+4. Launch one analyst sub-agent per holding with Claude Haiku and native `web_search` only, bounded by `asyncio.Semaphore(5)`
 5. Save each analyst report card under `data/companies/`
 6. Convert each report card into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
-8. Run one short no-tool synthesis call for the final portfolio summary
+8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
 
 MF holdings are saved and surfaced informationally, but they are never analyzed as stocks and never included in equity rebalancing math.
 
@@ -113,9 +120,10 @@ Data layout:
 - `reports/`: portfolio reports
 - `reports/research/`: per-holding research files, combined digest, and index artifacts
 
-## Cost Estimate
+## Model Split
 
-A full portfolio run typically costs about `~₹2`, depending on model usage, number of holdings, and web searches.
+- `MODEL`: main Artha agent, portfolio synthesis, and deep-research orchestration defaults to `claude-sonnet-4-6`
+- `ANALYST_MODEL`: per-holding analyst sub-agents default to `claude-haiku-4-5`
 
 ## Warning
 

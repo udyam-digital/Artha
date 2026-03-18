@@ -44,6 +44,8 @@ class FakeAnthropicClient:
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         ANTHROPIC_API_KEY="test-key",
+        MODEL="claude-sonnet-4-6",
+        ANALYST_MODEL="claude-haiku-4-5",
         REPORTS_DIR=str(tmp_path / "reports"),
         KITE_DATA_DIR=str(tmp_path / "kite"),
     )
