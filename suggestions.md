@@ -6,6 +6,7 @@
 - Introduce a small `HoldingContext` model for orchestrator-to-analyst handoff. That will make the boundary explicit for 52-week context, target-weight drift, and future additions like holding period or thesis notes.
 - Add a dedicated `rebalance_merge.py` helper if verdict-to-action policy becomes more nuanced. The current merge logic is still compact, but it is now a business rule layer rather than a pure formatting concern.
 - Keep model routing explicit by role. The current `MODEL` plus `ANALYST_MODEL` split is the right pattern; if research costs stay high, add a separate `RESEARCH_MODEL` instead of overloading one global model knob.
+- Consider an event-aware refresh policy on top of the 7-day cache. Earnings dates, exchange filings, and large price moves should be able to invalidate a company artifact earlier than the pure time-based TTL.
 
 ## Reliability
 
@@ -18,6 +19,7 @@
 - Emit one structured log event per analyst completion with symbol, duration, verdict, confidence, action, and error state. That will make the parallel run easy to inspect in production-like environments.
 - Track orchestrator-level counters for analyzed equities, excluded ETFs, MF holdings, analyst failures, and total synthesis time.
 - Add a lightweight timing breakdown to the saved report payload or sidecar artifact so portfolio sync, price-context fetch, analyst fan-out, and final synthesis can be compared over time.
+- Persist per-call token usage to a small JSONL or CSV artifact instead of logs only. That will make it much easier to confirm that cache reuse and token caps are reducing cost in practice.
 
 ## Research Quality
 

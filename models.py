@@ -156,6 +156,14 @@ class AnalystReportCard(StrictModel):
     data_sources: list[str] = Field(default_factory=list)
 
 
+class CompanyAnalysisArtifact(StrictModel):
+    generated_at: datetime
+    source_model: str
+    exchange: str
+    ticker: str
+    report_card: AnalystReportCard
+
+
 class Verdict(str, Enum):
     STRONG_BUY = "STRONG_BUY"
     BUY = "BUY"

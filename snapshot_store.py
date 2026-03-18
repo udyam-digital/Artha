@@ -8,7 +8,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from config import Settings, get_settings
-from models import MFSnapshot, PortfolioSnapshot, ResearchDigest
+from models import CompanyAnalysisArtifact, MFSnapshot, PortfolioSnapshot, ResearchDigest
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -96,3 +96,26 @@ def save_research_digest(
         index_path,
     )
     return digest_path, per_holding_paths, index_path
+
+
+def company_analysis_path(ticker: str, settings: Settings | None = None) -> Path:
+    settings = settings or get_settings()
+    safe_ticker = ticker.upper().replace("/", "_").replace(" ", "_")
+    return settings.kite_data_dir.parent / "companies" / f"{safe_ticker}.json"
+
+
+def save_company_analysis_artifact(
+    artifact: CompanyAnalysisArtifact,
+    settings: Settings | None = None,
+) -> Path:
+    path = company_analysis_path(artifact.ticker, settings=settings)
+    _write_model(artifact, path)
+    return path
+
+
+def load_company_analysis_artifact(
+    ticker: str,
+    settings: Settings | None = None,
+) -> CompanyAnalysisArtifact:
+    path = company_analysis_path(ticker, settings=settings)
+    return CompanyAnalysisArtifact.model_validate_json(path.read_text(encoding="utf-8"))

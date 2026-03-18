@@ -10,11 +10,10 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic
 
-from analyst import analyse_stock
 from config import configure_logging, get_settings
 from kite_runtime import KiteSyncResult, sync_kite_data
 from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
-from orchestrator import run_full_analysis
+from orchestrator import run_full_analysis, run_single_company_analysis
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from research import DeepResearchOrchestrator
 from snapshot_store import load_latest_portfolio_snapshot
@@ -257,40 +256,15 @@ async def handle_run(args: argparse.Namespace) -> int:
         return 0
 
     if args.ticker:
-        snapshot: PortfolioSnapshot | None = None
-        try:
-            snapshot = load_latest_portfolio_snapshot(settings)
-        except Exception:
-            snapshot = None
-
-        holding = None
-        if snapshot is not None:
-            holding = next(
-                (
-                    item
-                    for item in snapshot.holdings
-                    if item.tradingsymbol == args.ticker.upper() and item.tradingsymbol not in PASSIVE_INSTRUMENTS
-                ),
-                None,
-            )
-        if holding is None:
-            holding = build_standalone_holding(args.ticker, exchange=getattr(args, "exchange", "NSE"))
-            logger.info(
-                "Running standalone analyst mode for %s on %s without portfolio context",
-                holding.tradingsymbol,
-                holding.exchange,
-            )
-
-        skills_content = (Path("skills") / "analyst_prompt.md").read_text(encoding="utf-8")
-        verdict = await analyse_stock(
-            holding=holding,
-            portfolio_total_value=snapshot.total_value if snapshot is not None else 0.0,
-            price_context={"52w_high": "N/A", "52w_low": "N/A", "current_vs_52w_high_pct": "N/A"},
-            skills_content=skills_content,
-            client=AsyncAnthropic(api_key=settings.anthropic_api_key),
-            config=settings,
+        report = await run_single_company_analysis(
+            settings=settings,
+            ticker=args.ticker,
+            exchange=getattr(args, "exchange", "NSE"),
         )
-        print_single_verdict(verdict)
+        output_path = save_report(report, settings.reports_dir)
+        print_report(report)
+        print()
+        print(f"JSON report saved to: {output_path}")
         return 0
 
     started = time.perf_counter()

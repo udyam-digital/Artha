@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -118,7 +119,7 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
 
     state = {"active": 0, "max_active": 0, "symbols": []}
 
-    async def fake_analyse_stock(**kwargs):
+    async def fake_get_company_artifact_and_verdict(**kwargs):
         holding = kwargs["holding"]
         state["active"] += 1
         state["max_active"] = max(state["max_active"], state["active"])
@@ -126,7 +127,7 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
         state["active"] -= 1
         state["symbols"].append(holding.tradingsymbol)
         if holding.tradingsymbol == "BSE":
-            return StockVerdict(
+            verdict = StockVerdict(
                 tradingsymbol="BSE",
                 company_name="BSE Ltd",
                 verdict="HOLD",
@@ -146,7 +147,8 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
                 analysis_duration_seconds=1.0,
                 error=None,
             )
-        return StockVerdict(
+            return object(), verdict, False
+        verdict = StockVerdict(
             tradingsymbol="KPITTECH",
             company_name="KPIT Tech",
             verdict="BUY",
@@ -166,8 +168,9 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
             analysis_duration_seconds=1.2,
             error=None,
         )
+        return object(), verdict, False
 
-    monkeypatch.setattr(orchestrator, "analyse_stock", fake_analyse_stock)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
     fake_summary_client = FakeSummaryClient()
     monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: fake_summary_client)
 
@@ -189,3 +192,121 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     assert progress[-1][0] == 2
     assert fake_summary_client.calls[0].get("tools") is None
     assert fake_summary_client.calls[0]["model"] == "claude-sonnet-4-6"
+
+
+async def test_run_full_analysis_reuses_fresh_company_cache(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    mf_snapshot = MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[])
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=mf_snapshot,
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+
+    calls = {"count": 0}
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        calls["count"] += 1
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="KPITTECH",
+                company_name="KPIT Tech",
+                verdict="BUY",
+                confidence="HIGH",
+                current_price=100.0,
+                buy_price=110.0,
+                pnl_pct=-9.0,
+                thesis_intact=True,
+                bull_case="Demand is healthy.",
+                bear_case="Auto slowdown risk.",
+                what_to_watch="Deal wins",
+                red_flags=[],
+                rebalance_action="BUY",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="Will be overwritten.",
+                data_sources=["https://example.com/kpit"],
+                analysis_duration_seconds=1.2,
+                error=None,
+            ),
+            True,
+        )
+
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    report = await orchestrator.run_full_analysis(settings)
+    assert calls["count"] == 1
+    assert report.verdicts[0].analysis_duration_seconds == 0.0
+
+
+async def test_run_single_company_analysis_returns_portfolio_report(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=500.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+
+    monkeypatch.setattr(
+        "snapshot_store.load_latest_portfolio_snapshot",
+        lambda settings: snapshot,
+    )
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="KPITTECH",
+                company_name="KPIT Tech",
+                verdict="BUY",
+                confidence="HIGH",
+                current_price=100.0,
+                buy_price=110.0,
+                pnl_pct=-9.0,
+                thesis_intact=True,
+                bull_case="Demand is healthy.",
+                bear_case="Auto slowdown risk.",
+                what_to_watch="Deal wins",
+                red_flags=[],
+                rebalance_action="BUY",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="Will be overwritten.",
+                data_sources=["https://example.com/kpit"],
+                analysis_duration_seconds=1.2,
+                error=None,
+            ),
+            True,
+        )
+
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+
+    async def fake_price_contexts(**kwargs):
+        return {}
+
+    monkeypatch.setattr(orchestrator, "_price_contexts", fake_price_contexts)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    report = await orchestrator.run_single_company_analysis(settings=settings, ticker="KPITTECH")
+    assert len(report.verdicts) == 1
+    assert report.verdicts[0].tradingsymbol == "KPITTECH"
+    assert report.portfolio_snapshot.total_value == 10_000.0

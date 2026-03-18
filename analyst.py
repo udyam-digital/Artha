@@ -1,22 +1,26 @@
 from __future__ import annotations
 
-import ast
 import json
 import logging
 import time
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 from anthropic import AsyncAnthropic
 
 from config import Settings
-from models import AnalystReportCard, Holding, StockVerdict
+from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
+from snapshot_store import save_company_analysis_artifact
 from tools import get_web_search_tool_definition
 
 
 logger = logging.getLogger(__name__)
 
 MAX_ANALYST_ITERATIONS = 6
+JSON_PARSE_REPAIR_PROMPT = (
+    "Your previous response was not valid JSON for the required analyst report card schema. "
+    "Return exactly one valid JSON object only. Do not include markdown, prose, XML, code fences, or explanations."
+)
 
 
 def _extract_text(response: Any) -> str:
@@ -29,46 +33,30 @@ def _extract_text(response: Any) -> str:
 
 def _extract_report_card_dict(raw_text: str) -> dict[str, Any]:
     text = raw_text.strip()
-    if text.startswith("<verdict>") and text.endswith("</verdict>"):
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError("Analyst response did not contain a valid JSON object.")
-        payload = json.loads(text[start : end + 1])
-        if not isinstance(payload, dict):
-            raise ValueError("Analyst response was not a JSON object.")
-        return payload
+    if not text:
+        raise ValueError("Analyst response was empty.")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = _extract_first_json_object(text)
+    if not isinstance(payload, dict):
+        raise ValueError("Analyst response was not a JSON object.")
+    return payload
 
-    tree = ast.parse(text)
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in {"output", "report_card", "data"}:
-                    payload = ast.literal_eval(node.value)
-                    if not isinstance(payload, dict):
-                        raise ValueError("Analyst report card assignment was not a JSON-like object.")
-                    return payload
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Dict):
-            payload = ast.literal_eval(node.value)
-            if not isinstance(payload, dict):
-                raise ValueError("Analyst report card expression was not a JSON-like object.")
+
+def _extract_first_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
             return payload
-    raise ValueError("Analyst response did not include a report card payload.")
-
-
-def _company_report_path(tradingsymbol: str) -> Path:
-    safe_symbol = tradingsymbol.upper().replace("/", "_").replace(" ", "_")
-    return Path("data") / "companies" / f"{safe_symbol}.json"
-
-
-def _save_report_card(report_card: AnalystReportCard) -> Path:
-    output_path = _company_report_path(report_card.stock_snapshot.ticker)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(report_card.model_dump(mode="json", by_alias=True), indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
-    return output_path
+    preview = text[:240].replace("\n", "\\n")
+    raise ValueError(f"Analyst response did not contain a valid JSON object. Preview: {preview}")
 
 
 def _map_card_confidence(confidence: str) -> str:
@@ -131,10 +119,11 @@ def _derive_red_flags(report_card: AnalystReportCard) -> list[str]:
 
 def _report_card_to_stock_verdict(
     *,
-    report_card: AnalystReportCard,
+    artifact: CompanyAnalysisArtifact,
     holding: Holding,
     duration_seconds: float,
 ) -> StockVerdict:
+    report_card = artifact.report_card
     final_signal = report_card.final_verdict.verdict
     what_to_watch = (
         report_card.monitoring.key_metrics[0]
@@ -144,11 +133,11 @@ def _report_card_to_stock_verdict(
         else report_card.thesis.trigger
     )
     thesis_intact = final_signal != "EXIT"
-    current_price = report_card.stock_snapshot.current_price if report_card.stock_snapshot.current_price > 0 else holding.last_price
+    current_price = holding.last_price if holding.last_price > 0 else report_card.stock_snapshot.current_price
     buy_price = holding.average_price
     pnl_pct = holding.pnl_pct
     return StockVerdict(
-        tradingsymbol=report_card.stock_snapshot.ticker.upper(),
+        tradingsymbol=artifact.ticker.upper(),
         company_name=report_card.stock_snapshot.name,
         verdict=_map_card_verdict(final_signal),
         confidence=_map_card_confidence(report_card.final_verdict.confidence),
@@ -245,19 +234,40 @@ def _materialize_tool_results(response: Any) -> list[dict[str, Any]]:
     return tool_results
 
 
-async def analyse_stock(
+def _log_response_usage(*, label: str, response: Any) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    logger.info(
+        "%s token usage: input=%s output=%s",
+        label,
+        getattr(usage, "input_tokens", "unknown"),
+        getattr(usage, "output_tokens", "unknown"),
+    )
+
+
+def _build_company_artifact(
+    *,
+    report_card: AnalystReportCard,
     holding: Holding,
-    portfolio_total_value: float,
+    config: Settings,
+) -> CompanyAnalysisArtifact:
+    return CompanyAnalysisArtifact(
+        generated_at=datetime.now(timezone.utc),
+        source_model=config.analyst_model,
+        exchange=holding.exchange,
+        ticker=holding.tradingsymbol.upper(),
+        report_card=report_card,
+    )
+
+
+async def generate_company_artifact(
+    holding: Holding,
     price_context: dict[str, float | str],
     skills_content: str,
     client: AsyncAnthropic,
     config: Settings,
-) -> StockVerdict:
-    """
-    Single-stock sub-agent. One focused Claude API call with web search.
-    Returns StockVerdict. Never raises — returns StockVerdict with error field.
-    """
-    del portfolio_total_value
+) -> CompanyAnalysisArtifact:
     started = time.perf_counter()
     logger.info("[%s] starting analysis", holding.tradingsymbol)
 
@@ -298,64 +308,109 @@ async def analyse_stock(
     Current vs 52w High: {price_context.get('current_vs_52w_high_pct', 'N/A')}%
 
     If portfolio context is missing, treat this as a standalone unbiased research request.
-    Research this stock using web search and return your verdict.
+    Research this stock using web search and return a valid JSON object only.
     """
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
-    raw_text = ""
 
-    try:
-        for _ in range(MAX_ANALYST_ITERATIONS):
-            response = await client.messages.create(
-                model=config.analyst_model,
-                max_tokens=config.max_tokens,
-                system=skills_content,
-                messages=messages,
-                tools=[get_web_search_tool_definition()],
-            )
-            stop_reason = getattr(response, "stop_reason", None)
+    for iteration in range(1, MAX_ANALYST_ITERATIONS + 1):
+        response = await client.messages.create(
+            model=config.analyst_model,
+            max_tokens=config.analyst_max_tokens,
+            system=skills_content,
+            messages=messages,
+            tools=[get_web_search_tool_definition()],
+        )
+        _log_response_usage(label=f"[{holding.tradingsymbol}] analyst", response=response)
+        stop_reason = getattr(response, "stop_reason", None)
 
-            if stop_reason == "pause_turn":
-                messages.append({"role": "assistant", "content": response.content})
-                continue
+        if stop_reason == "pause_turn":
+            messages.append({"role": "assistant", "content": response.content})
+            continue
 
-            if stop_reason == "tool_use":
-                messages.append({"role": "assistant", "content": response.content})
-                tool_results = _materialize_tool_results(response)
-                if tool_results:
-                    messages.append({"role": "user", "content": tool_results})
-                continue
+        if stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = _materialize_tool_results(response)
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+            continue
 
-            if stop_reason in {"end_turn", "max_tokens"}:
-                raw_text = _extract_text(response)
+        if stop_reason in {"end_turn", "max_tokens"}:
+            raw_text = _extract_text(response)
+            try:
                 payload = _extract_report_card_dict(raw_text)
-                duration_seconds = time.perf_counter() - started
-                if "stock_snapshot" in payload and "final_verdict" in payload:
-                    report_card = AnalystReportCard.model_validate(payload)
-                    output_path = _save_report_card(report_card)
-                    verdict = _report_card_to_stock_verdict(
-                        report_card=report_card,
-                        holding=holding,
-                        duration_seconds=duration_seconds,
-                    )
-                    logger.info("[%s] saved report card to %s", holding.tradingsymbol, output_path)
-                else:
-                    verdict = _legacy_payload_to_stock_verdict(
-                        payload=payload,
-                        holding=holding,
-                        duration_seconds=duration_seconds,
-                    )
-                logger.info(
-                    "[%s] done in %.1fs — %s",
+                report_card = AnalystReportCard.model_validate(payload)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] invalid analyst JSON on iteration %s/%s: %s",
                     holding.tradingsymbol,
-                    verdict.analysis_duration_seconds,
-                    verdict.verdict,
+                    iteration,
+                    MAX_ANALYST_ITERATIONS,
+                    exc,
                 )
-                return verdict
+                if iteration >= MAX_ANALYST_ITERATIONS:
+                    raise
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{JSON_PARSE_REPAIR_PROMPT} Validation error: {exc}. "
+                            "Keep all required keys and enum values exactly as specified."
+                        ),
+                    }
+                )
+                continue
 
-            raise ValueError(f"Unexpected stop_reason: {stop_reason}")
+            artifact = _build_company_artifact(report_card=report_card, holding=holding, config=config)
+            output_path = save_company_analysis_artifact(artifact, settings=config)
+            logger.info(
+                "[%s] saved company analysis to %s in %.1fs",
+                holding.tradingsymbol,
+                output_path,
+                time.perf_counter() - started,
+            )
+            return artifact
 
-        raise ValueError("Analyst sub-agent exceeded MAX_ANALYST_ITERATIONS.")
+        raise ValueError(f"Unexpected stop_reason: {stop_reason}")
+
+    raise ValueError("Analyst sub-agent exceeded MAX_ANALYST_ITERATIONS.")
+
+
+async def analyse_stock(
+    holding: Holding,
+    portfolio_total_value: float,
+    price_context: dict[str, float | str],
+    skills_content: str,
+    client: AsyncAnthropic,
+    config: Settings,
+) -> StockVerdict:
+    """
+    Single-stock sub-agent. One focused Claude API call with web search.
+    Returns StockVerdict. Never raises — returns StockVerdict with error field.
+    """
+    del portfolio_total_value
+    started = time.perf_counter()
+    try:
+        artifact = await generate_company_artifact(
+            holding=holding,
+            price_context=price_context,
+            skills_content=skills_content,
+            client=client,
+            config=config,
+        )
+        verdict = _report_card_to_stock_verdict(
+            artifact=artifact,
+            holding=holding,
+            duration_seconds=time.perf_counter() - started,
+        )
+        logger.info(
+            "[%s] done in %.1fs — %s",
+            holding.tradingsymbol,
+            verdict.analysis_duration_seconds,
+            verdict.verdict,
+        )
+        return verdict
     except Exception as exc:
         duration_seconds = time.perf_counter() - started
         verdict = _build_fallback_verdict(

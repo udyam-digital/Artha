@@ -4,15 +4,16 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from collections.abc import Callable
 from pathlib import Path
 
 from anthropic import AsyncAnthropic
 
-from analyst import analyse_stock
+from company_analysis import get_company_artifact_and_verdict
 from config import Settings
 from kite_runtime import KiteSyncResult, build_kite_client, sync_kite_data
-from models import Holding, PortfolioReport, RebalancingAction, StockVerdict, Verdict
+from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from tools import kite_get_price_history
 
@@ -100,25 +101,27 @@ async def _build_portfolio_summary(
     client: AsyncAnthropic,
     settings: Settings,
     verdicts: list[StockVerdict],
-    sync_result: KiteSyncResult,
+    snapshot: PortfolioSnapshot,
+    mf_symbols: list[str],
     errors: list[str],
 ) -> str:
     payload = {
-        "portfolio_value": sync_result.portfolio_snapshot.total_value,
-        "available_cash": sync_result.portfolio_snapshot.available_cash,
-        "equity_holdings": [holding.tradingsymbol for holding in sync_result.portfolio_snapshot.holdings],
-        "mf_holdings": [holding.tradingsymbol for holding in sync_result.mf_snapshot.holdings],
+        "portfolio_value": snapshot.total_value,
+        "available_cash": snapshot.available_cash,
+        "equity_holdings": [holding.tradingsymbol for holding in snapshot.holdings],
+        "mf_holdings": mf_symbols,
         "verdicts": [verdict.model_dump(mode="json") for verdict in verdicts],
         "errors": errors,
     }
+    subject = "portfolio" if len(verdicts) != 1 else "single-stock portfolio"
     response = await client.messages.create(
         model=settings.model,
-        max_tokens=min(settings.max_tokens, 700),
+        max_tokens=min(settings.max_tokens, settings.summary_max_tokens),
         messages=[
             {
                 "role": "user",
                 "content": (
-                    "Write a concise 3-5 sentence portfolio summary for Saksham's Indian equity portfolio. "
+                    f"Write a concise 3-5 sentence summary for Saksham's Indian equity {subject}. "
                     "Do not redo analysis. Use only the supplied verdict JSON and mention the main concentration, "
                     "risk, and rebalance takeaways.\n"
                     f"Input JSON:\n{json.dumps(payload, ensure_ascii=True)}"
@@ -126,6 +129,13 @@ async def _build_portfolio_summary(
             }
         ],
     )
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        logger.info(
+            "summary token usage: input=%s output=%s",
+            getattr(usage, "input_tokens", "unknown"),
+            getattr(usage, "output_tokens", "unknown"),
+        )
     text_parts = [
         getattr(block, "text", "")
         for block in getattr(response, "content", [])
@@ -163,14 +173,16 @@ async def run_full_analysis(
 
     async def bounded_analyse(holding: Holding) -> StockVerdict:
         async with semaphore:
-            return await analyse_stock(
+            _, verdict, from_cache = await get_company_artifact_and_verdict(
                 holding=holding,
-                portfolio_total_value=sync_result.portfolio_snapshot.total_value,
                 price_context=price_context_by_symbol.get(holding.tradingsymbol, {}),
                 skills_content=skills_content,
                 client=client,
-                config=settings,
+                settings=settings,
             )
+            if from_cache:
+                verdict.analysis_duration_seconds = 0.0
+            return verdict
 
     task_to_symbol = {
         asyncio.create_task(bounded_analyse(holding)): holding.tradingsymbol
@@ -207,7 +219,8 @@ async def run_full_analysis(
         client=client,
         settings=settings,
         verdicts=verdicts,
-        sync_result=sync_result,
+        snapshot=sync_result.portfolio_snapshot,
+        mf_symbols=[holding.tradingsymbol for holding in sync_result.mf_snapshot.holdings],
         errors=[error for error in errors if error],
     )
 
@@ -231,4 +244,95 @@ async def run_full_analysis(
         total_buy_required=total_buy_required,
         total_sell_required=total_sell_required,
         errors=[error for error in errors if error],
+    )
+
+
+async def run_single_company_analysis(
+    *,
+    settings: Settings,
+    ticker: str,
+    exchange: str = "NSE",
+) -> PortfolioReport:
+    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    skills_content = _load_analyst_prompt()
+    snapshot: PortfolioSnapshot | None = None
+    try:
+        from snapshot_store import load_latest_portfolio_snapshot
+
+        snapshot = load_latest_portfolio_snapshot(settings)
+    except Exception:
+        snapshot = None
+
+    holding = None
+    if snapshot is not None:
+        holding = next(
+            (
+                item
+                for item in snapshot.holdings
+                if item.tradingsymbol == ticker.upper() and item.tradingsymbol not in PASSIVE_INSTRUMENTS
+            ),
+            None,
+        )
+
+    if holding is None:
+        holding = Holding(
+            tradingsymbol=ticker.upper(),
+            exchange=exchange.upper(),
+            quantity=0,
+            average_price=0.0,
+            last_price=0.0,
+            current_value=0.0,
+            current_weight_pct=0.0,
+            target_weight_pct=0.0,
+            pnl=0.0,
+            pnl_pct=0.0,
+            instrument_token=0,
+        )
+
+    price_context: dict[str, float | str] = {"52w_high": "N/A", "52w_low": "N/A", "current_vs_52w_high_pct": "N/A"}
+    if holding.instrument_token > 0:
+        price_context = (await _price_contexts(settings=settings, holdings=[holding])).get(holding.tradingsymbol, price_context)
+
+    _, verdict, from_cache = await get_company_artifact_and_verdict(
+        holding=holding,
+        price_context=price_context,
+        skills_content=skills_content,
+        client=client,
+        settings=settings,
+    )
+    if from_cache:
+        verdict.analysis_duration_seconds = 0.0
+
+    portfolio_total_value = snapshot.total_value if snapshot is not None else holding.current_value
+    portfolio_cash = snapshot.available_cash if snapshot is not None else 0.0
+    actions = calculate_rebalancing_actions(
+        holdings=[holding] if holding.tradingsymbol not in PASSIVE_INSTRUMENTS else [],
+        total_value=portfolio_total_value,
+        available_cash=portfolio_cash,
+    )
+    action = next((item for item in actions if item.tradingsymbol == holding.tradingsymbol), None)
+    _merge_action_into_verdict(verdict, action)
+
+    report_snapshot = PortfolioSnapshot(
+        fetched_at=snapshot.fetched_at if snapshot is not None else datetime.now(timezone.utc),
+        total_value=portfolio_total_value,
+        available_cash=portfolio_cash,
+        holdings=[holding],
+    )
+    summary = await _build_portfolio_summary(
+        client=client,
+        settings=settings,
+        verdicts=[verdict],
+        snapshot=report_snapshot,
+        mf_symbols=[],
+        errors=[],
+    )
+    return PortfolioReport(
+        generated_at=datetime.now(timezone.utc),
+        portfolio_snapshot=report_snapshot,
+        verdicts=[verdict],
+        portfolio_summary=summary,
+        total_buy_required=verdict.rebalance_rupees if verdict.rebalance_action == "BUY" else 0.0,
+        total_sell_required=verdict.rebalance_rupees if verdict.rebalance_action == "SELL" else 0.0,
+        errors=[verdict.error] if verdict.error else [],
     )

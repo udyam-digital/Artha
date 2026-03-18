@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from config import Settings
 from analyst import analyse_stock
+from config import Settings
 from models import Holding
 
 
@@ -53,9 +53,8 @@ def make_holding() -> Holding:
     )
 
 
-def make_report_card_code(ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD") -> str:
-    return f"""
-output = {{
+def make_report_card_json(ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD") -> str:
+    return f"""{{
     "stock_snapshot": {{
         "name": "{name}",
         "ticker": "{ticker}",
@@ -136,8 +135,7 @@ output = {{
         "https://www.screener.in/company/{ticker}/",
         "https://www.example.com/{ticker.lower()}-results"
     ]
-}}
-"""
+}}"""
 
 
 async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> None:
@@ -152,7 +150,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
         content=[
             SimpleNamespace(
                 type="text",
-                text=make_report_card_code("KPITTECH"),
+                text=make_report_card_json("KPITTECH"),
             )
         ],
     )
@@ -168,10 +166,10 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     )
     monkeypatch.undo()
     assert verdict.verdict == "BUY"
-    assert verdict.current_price == 1420.0
+    assert verdict.current_price == 80.0
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
-    assert (tmp_path / "data" / "companies" / "KPITTECH.json").exists()
+    assert (tmp_path / "companies" / "KPITTECH.json").exists()
 
 
 async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
@@ -179,7 +177,7 @@ async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
         [
             SimpleNamespace(
                 stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text=make_report_card_code("KPITTECH"))],
+                content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
             )
         ]
     )
@@ -211,7 +209,7 @@ async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
 async def test_analyse_stock_falls_back_on_invalid_json(tmp_path: Path) -> None:
     response = SimpleNamespace(
         stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text="<verdict>{not-json}</verdict>")],
+        content=[SimpleNamespace(type="text", text="{not-json}")],
     )
     verdict = await analyse_stock(
         holding=make_holding(),
@@ -231,7 +229,7 @@ async def test_analyse_stock_falls_back_on_invalid_schema(tmp_path: Path) -> Non
         content=[
             SimpleNamespace(
                 type="text",
-                text='<verdict>{"tradingsymbol":"KPITTECH","company_name":"KPIT Tech"}</verdict>',
+                text='{"tradingsymbol":"KPITTECH","company_name":"KPIT Tech"}',
             )
         ],
     )
@@ -253,7 +251,7 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
         content=[
             SimpleNamespace(
                 type="text",
-                text=make_report_card_code("INFY", name="Infosys", final_verdict="HOLD"),
+                text=make_report_card_json("INFY", name="Infosys", final_verdict="HOLD"),
             )
         ],
     )
@@ -285,4 +283,66 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
     assert verdict.current_price == 1420.0
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
-    assert (tmp_path / "data" / "companies" / "INFY.json").exists()
+    assert (tmp_path / "companies" / "INFY.json").exists()
+
+
+async def test_analyse_stock_rejects_legacy_python_payload(tmp_path: Path) -> None:
+    response = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="output = {'stock_snapshot': {}}")],
+    )
+    verdict = await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={},
+        skills_content="system",
+        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    assert verdict.verdict == "HOLD"
+    assert verdict.error is not None
+
+
+async def test_analyse_stock_extracts_json_from_wrapped_text(tmp_path: Path) -> None:
+    response = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[
+            SimpleNamespace(
+                type="text",
+                text=f"Here is the report card you requested:\n```json\n{make_report_card_json('KPITTECH')}\n```",
+            )
+        ],
+    )
+    verdict = await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={},
+        skills_content="system",
+        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    assert verdict.verdict == "BUY"
+    assert verdict.error is None
+
+
+async def test_analyse_stock_repairs_invalid_json_with_followup_turn(tmp_path: Path) -> None:
+    invalid_response = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="I found the right data. Returning it now.")],
+    )
+    fixed_response = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
+    )
+    client = FakeAnthropicClient([invalid_response, fixed_response])
+    verdict = await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={},
+        skills_content="system",
+        client=client,  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    assert verdict.verdict == "BUY"
+    assert verdict.error is None
+    assert len(client.calls) == 2

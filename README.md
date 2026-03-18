@@ -1,6 +1,6 @@
 # Artha
 
-Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, connects to Zerodha/Kite through an MCP server configured in `.env`, runs one parallel analyst sub-agent per eligible equity holding on Claude Haiku, and keeps the main Artha synthesis path on Claude Sonnet.
+Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, connects to Zerodha/Kite through an MCP server configured in `.env`, caches strict JSON company-analysis artifacts under `data/companies/`, refreshes them only when stale, uses Claude Haiku for cost-sensitive company artifact generation, and keeps the main Artha synthesis path on Claude Sonnet.
 
 ## Prerequisites
 
@@ -32,6 +32,9 @@ Model routing in `.env`:
 ```bash
 MODEL=claude-sonnet-4-6
 ANALYST_MODEL=claude-haiku-4-5
+ANALYST_MAX_TOKENS=2500
+SUMMARY_MAX_TOKENS=700
+COMPANY_ANALYSIS_MAX_AGE_DAYS=7
 ```
 
 Authenticate and sync fresh snapshots:
@@ -61,8 +64,8 @@ Supported flows:
 - `kite-login`: authenticate a live hosted Kite MCP session in the browser
 - `kite-sync`: fetch fresh equity and MF snapshots and persist them locally
 - `rebalance`: generate a math-only rebalancing report from the latest saved local equity snapshot, with no LLM call
-- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, builds per-stock analyst report cards in parallel on Claude Haiku, converts them into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet
-- `run --ticker KPITTECH`: runs one focused analyst sub-agent and saves its structured report card under `data/companies/KPITTECH.json`
+- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet
+- `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/companies/KPITTECH.json` as needed
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
@@ -74,9 +77,9 @@ Supported flows:
 1. Sync live equity holdings, MF holdings, cash, and profile from Kite
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch 52-week price context once per analyzable equity holding
-4. Launch one analyst sub-agent per holding with Claude Haiku and native `web_search` only, bounded by `asyncio.Semaphore(5)`
-5. Save each analyst report card under `data/companies/`
-6. Convert each report card into a normalized Artha verdict
+4. Check `data/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
+5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and native `web_search`, bounded by `asyncio.Semaphore(5)`
+6. Convert each cached or refreshed company artifact into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
 8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
 
@@ -84,7 +87,7 @@ MF holdings are saved and surfaced informationally, but they are never analyzed 
 
 ## Output Contract
 
-Portfolio runs persist `PortfolioReport` JSON with:
+Portfolio runs and `run --ticker` persist `PortfolioReport` JSON with:
 
 - `portfolio_snapshot`
 - `verdicts`
@@ -110,12 +113,18 @@ The CLI prints:
 - a short portfolio summary
 - completion timing and analyst/error counts
 
+Company artifact cache:
+
+- `data/companies/{ticker}.json` stores strict JSON with metadata and a validated analyst report card
+- artifacts are reused for up to `COMPANY_ANALYSIS_MAX_AGE_DAYS` days
+- old Python-code-style analyst payloads are not reused; they are treated as invalid cache and refreshed
+
 Data layout:
 
 - `data/kite/auth/`: login artifacts
 - `data/kite/portfolio/`: latest and historical equity snapshots
 - `data/kite/mf/`: latest and historical MF snapshots
-- `data/companies/`: per-company analyst report cards
+- `data/companies/`: per-company cached company-analysis artifacts
 - `data/console_exports/`: local notes and reference exports
 - `reports/`: portfolio reports
 - `reports/research/`: per-holding research files, combined digest, and index artifacts
@@ -124,6 +133,9 @@ Data layout:
 
 - `MODEL`: main Artha agent, portfolio synthesis, and deep-research orchestration defaults to `claude-sonnet-4-6`
 - `ANALYST_MODEL`: per-holding analyst sub-agents default to `claude-haiku-4-5`
+- `ANALYST_MAX_TOKENS`: lower output cap for company artifact generation
+- `SUMMARY_MAX_TOKENS`: lower output cap for the final Sonnet summary
+- `COMPANY_ANALYSIS_MAX_AGE_DAYS`: company-analysis cache freshness window, default `7`
 
 ## Warning
 

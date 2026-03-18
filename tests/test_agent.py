@@ -12,6 +12,7 @@ def make_settings(tmp_path: Path) -> Settings:
         ANTHROPIC_API_KEY="test-key",
         MODEL="claude-sonnet-4-6",
         ANALYST_MODEL="claude-haiku-4-5",
+        COMPANY_ANALYSIS_MAX_AGE_DAYS=7,
         REPORTS_DIR=str(reports_dir),
         KITE_MCP_URL="https://mcp.kite.trade/mcp",
     )
