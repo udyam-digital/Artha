@@ -106,6 +106,16 @@ Notes:
 - Avoid embedding business logic in the CLI when it belongs in `agent.py`, `tools.py`, or `rebalance.py`.
 - When changing prompts or tool definitions, update tests that assert prompt/tool behavior.
 
+## Skill Usage
+
+- Check `.github/skills/` for relevant repo-local `SKILL.md` guidance before doing substantial implementation, testing, verification, or review work.
+- If a matching local skill exists, follow it unless it conflicts with higher-priority instructions in this file.
+- Prefer the narrowest relevant skill rather than loading every skill.
+- Typical cases:
+  - use `.github/skills/pytest-coverage/` when changing tested Python behavior or adding coverage
+  - use `.github/skills/doublecheck/` before finalizing non-trivial changes that need a verification pass
+- Treat repo-local skills as execution guidance for this codebase, not just reference material.
+
 ## Test Commands
 
 ```bash

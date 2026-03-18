@@ -140,3 +140,17 @@ Data layout:
 ## Warning
 
 Artha provides analysis only. Never execute trades automatically from its output.
+
+## Agent Skills
+
+The repository includes the following GitHub Copilot Agent Skills from the awesome-copilot collection, installed in `.github/skills/`:
+
+- **conventional-commit**: Prompt and workflow for generating conventional commit messages using a structured XML format.
+- **create-readme**: Create a README.md file for the project.
+- **dependabot**: Comprehensive guide for configuring and managing GitHub Dependabot.
+- **doublecheck**: Three-layer verification pipeline for AI output with adversarial review for hallucination patterns.
+- **eval-driven-dev**: Instrument Python LLM apps, build golden datasets, write eval-based tests, run them, and root-cause failures.
+- **gh-cli**: GitHub CLI comprehensive reference for repositories, issues, pull requests, Actions, projects, releases, gists, codespaces, organizations, extensions, and all GitHub operations.
+- **pytest-coverage**: Run pytest tests with coverage, discover lines missing coverage, and increase coverage to 100%.
+- **python-mcp-server-generator**: Generate a complete MCP server project in Python with tools, resources, and proper configuration.
+- **sql-optimization**: Universal SQL performance optimization assistant for comprehensive query tuning, indexing strategies, and database performance analysis.
