@@ -109,6 +109,20 @@ def print_report(report: PortfolioReport) -> None:
     print()
     print("PORTFOLIO SUMMARY")
     print(report.portfolio_summary)
+    actionable = [verdict for verdict in report.verdicts if verdict.rebalance_action != "HOLD"]
+    if actionable:
+        print()
+        print("WHAT AND WHY")
+        for verdict in actionable:
+            print(
+                f"- {verdict.tradingsymbol}: {verdict.rebalance_action} "
+                f"{format_rupees(verdict.rebalance_rupees)} because {verdict.rebalance_reasoning}"
+            )
+    if report.errors:
+        print()
+        print("ERRORS")
+        for error in report.errors:
+            print(f"- {error}")
 
 
 def print_rebalance_report(report: PortfolioReport, actions: list[RebalancingAction]) -> None:

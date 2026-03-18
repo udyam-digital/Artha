@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +10,7 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from config import Settings
-from models import Holding, StockVerdict
+from models import AnalystReportCard, Holding, StockVerdict
 from tools import get_web_search_tool_definition
 
 
@@ -27,14 +27,169 @@ def _extract_text(response: Any) -> str:
     return "\n".join(text_parts).strip()
 
 
-def _extract_tagged_json(raw_text: str) -> dict[str, Any]:
-    match = re.search(r"<verdict>\s*(\{.*\})\s*</verdict>", raw_text, re.DOTALL)
-    if not match:
-        raise ValueError("Analyst response did not contain <verdict> JSON tags.")
-    payload = json.loads(match.group(1))
-    if not isinstance(payload, dict):
-        raise ValueError("Analyst response was not a JSON object.")
-    return payload
+def _extract_report_card_dict(raw_text: str) -> dict[str, Any]:
+    text = raw_text.strip()
+    if text.startswith("<verdict>") and text.endswith("</verdict>"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError("Analyst response did not contain a valid JSON object.")
+        payload = json.loads(text[start : end + 1])
+        if not isinstance(payload, dict):
+            raise ValueError("Analyst response was not a JSON object.")
+        return payload
+
+    tree = ast.parse(text)
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in {"output", "report_card", "data"}:
+                    payload = ast.literal_eval(node.value)
+                    if not isinstance(payload, dict):
+                        raise ValueError("Analyst report card assignment was not a JSON-like object.")
+                    return payload
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Dict):
+            payload = ast.literal_eval(node.value)
+            if not isinstance(payload, dict):
+                raise ValueError("Analyst report card expression was not a JSON-like object.")
+            return payload
+    raise ValueError("Analyst response did not include a report card payload.")
+
+
+def _company_report_path(tradingsymbol: str) -> Path:
+    safe_symbol = tradingsymbol.upper().replace("/", "_").replace(" ", "_")
+    return Path("data") / "companies" / f"{safe_symbol}.json"
+
+
+def _save_report_card(report_card: AnalystReportCard) -> Path:
+    output_path = _company_report_path(report_card.stock_snapshot.ticker)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(report_card.model_dump(mode="json", by_alias=True), indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def _map_card_confidence(confidence: str) -> str:
+    return confidence.upper()
+
+
+def _map_card_verdict(verdict: str) -> str:
+    mapping = {
+        "BUY": "BUY",
+        "ADD": "BUY",
+        "HOLD": "HOLD",
+        "TRIM": "SELL",
+        "EXIT": "STRONG_SELL",
+    }
+    return mapping[verdict]
+
+
+def _map_card_action(verdict: str) -> str:
+    mapping = {
+        "BUY": "BUY",
+        "ADD": "BUY",
+        "HOLD": "HOLD",
+        "TRIM": "SELL",
+        "EXIT": "SELL",
+    }
+    return mapping[verdict]
+
+
+def _derive_bear_case(report_card: AnalystReportCard) -> str:
+    risk_items = (
+        report_card.risk_matrix.company_risks
+        or report_card.risk_matrix.cyclical_risks
+        or report_card.risk_matrix.structural_risks
+    )
+    base = risk_items[0] if risk_items else f"Risk level is {report_card.risk_matrix.risk_level.lower()}."
+    governance = report_card.quality.governance_flags.strip()
+    if governance and governance.lower() not in {"none", "nil", "no", "none identified"}:
+        return f"{base} Governance watch: {governance}."
+    return str(base)
+
+
+def _derive_red_flags(report_card: AnalystReportCard) -> list[str]:
+    flags = list(report_card.monitoring.red_flags)
+    governance = report_card.quality.governance_flags.strip()
+    if governance and governance.lower() not in {"none", "nil", "no", "none identified"}:
+        flags.append(governance)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for flag in flags:
+        normalized = flag.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+def _report_card_to_stock_verdict(
+    *,
+    report_card: AnalystReportCard,
+    holding: Holding,
+    duration_seconds: float,
+) -> StockVerdict:
+    final_signal = report_card.final_verdict.verdict
+    what_to_watch = (
+        report_card.monitoring.key_metrics[0]
+        if report_card.monitoring.key_metrics
+        else report_card.monitoring.next_triggers[0]
+        if report_card.monitoring.next_triggers
+        else report_card.thesis.trigger
+    )
+    thesis_intact = final_signal != "EXIT"
+    current_price = report_card.stock_snapshot.current_price if report_card.stock_snapshot.current_price > 0 else holding.last_price
+    buy_price = holding.average_price
+    pnl_pct = holding.pnl_pct
+    return StockVerdict(
+        tradingsymbol=report_card.stock_snapshot.ticker.upper(),
+        company_name=report_card.stock_snapshot.name,
+        verdict=_map_card_verdict(final_signal),
+        confidence=_map_card_confidence(report_card.final_verdict.confidence),
+        current_price=current_price,
+        buy_price=buy_price,
+        pnl_pct=pnl_pct,
+        thesis_intact=thesis_intact,
+        bull_case=f"{report_card.thesis.core_idea} {report_card.thesis.growth_driver}".strip(),
+        bear_case=_derive_bear_case(report_card),
+        what_to_watch=what_to_watch,
+        red_flags=_derive_red_flags(report_card),
+        rebalance_action=_map_card_action(final_signal),
+        rebalance_rupees=0.0,
+        rebalance_reasoning=(
+            f"Analyst report card verdict is {final_signal}, with timing {report_card.timing.timing_signal.lower()} "
+            f"and risk level {report_card.risk_matrix.risk_level.lower()}."
+        ),
+        data_sources=[],
+        analysis_duration_seconds=duration_seconds,
+        error=None,
+    )
+
+
+def _legacy_payload_to_stock_verdict(
+    *,
+    payload: dict[str, Any],
+    holding: Holding,
+    duration_seconds: float,
+) -> StockVerdict:
+    return StockVerdict.model_validate(
+        {
+            **payload,
+            "tradingsymbol": str(payload.get("tradingsymbol", holding.tradingsymbol)).upper(),
+            "company_name": str(payload.get("company_name", holding.tradingsymbol)),
+            "current_price": payload.get("current_price", holding.last_price),
+            "buy_price": payload.get("buy_price", holding.average_price),
+            "pnl_pct": payload.get("pnl_pct", holding.pnl_pct),
+            "analysis_duration_seconds": duration_seconds,
+            "error": None,
+        }
+    )
 
 
 def _build_fallback_verdict(
@@ -173,19 +328,23 @@ async def analyse_stock(
 
             if stop_reason in {"end_turn", "max_tokens"}:
                 raw_text = _extract_text(response)
-                payload = _extract_tagged_json(raw_text)
-                verdict = StockVerdict.model_validate(
-                    {
-                        **payload,
-                        "tradingsymbol": str(payload.get("tradingsymbol", holding.tradingsymbol)).upper(),
-                        "company_name": str(payload.get("company_name", holding.tradingsymbol)),
-                        "current_price": holding.last_price,
-                        "buy_price": holding.average_price,
-                        "pnl_pct": holding.pnl_pct,
-                        "analysis_duration_seconds": time.perf_counter() - started,
-                        "error": None,
-                    }
-                )
+                payload = _extract_report_card_dict(raw_text)
+                duration_seconds = time.perf_counter() - started
+                if "stock_snapshot" in payload and "final_verdict" in payload:
+                    report_card = AnalystReportCard.model_validate(payload)
+                    output_path = _save_report_card(report_card)
+                    verdict = _report_card_to_stock_verdict(
+                        report_card=report_card,
+                        holding=holding,
+                        duration_seconds=duration_seconds,
+                    )
+                    logger.info("[%s] saved report card to %s", holding.tradingsymbol, output_path)
+                else:
+                    verdict = _legacy_payload_to_stock_verdict(
+                        payload=payload,
+                        holding=holding,
+                        duration_seconds=duration_seconds,
+                    )
                 logger.info(
                     "[%s] done in %.1fs — %s",
                     holding.tradingsymbol,

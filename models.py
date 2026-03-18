@@ -52,6 +52,109 @@ class MFSnapshot(StrictModel):
     holdings: list[MFHolding]
 
 
+class AnalystStockSnapshot(StrictModel):
+    name: str
+    ticker: str
+    sector: str
+    market_cap_category: Literal["Large", "Mid", "Small"]
+    current_price: float
+    high_52w: float = Field(alias="52w_high")
+    low_52w: float = Field(alias="52w_low")
+    time_horizon: Literal["Compounder", "Cyclical", "Tactical"]
+
+
+class AnalystThesis(StrictModel):
+    core_idea: str
+    growth_driver: str
+    edge: str
+    trigger: str
+
+
+class AnalystGrowthEngine(StrictModel):
+    revenue_cagr: str
+    eps_cagr: str
+    sector_tailwind: Literal["High", "Medium", "Low"]
+    growth_score: int
+
+
+class AnalystQuality(StrictModel):
+    roce: str
+    roe: str
+    debt_to_equity: str
+    fcf_status: Literal["Positive", "Negative"]
+    governance_flags: str
+    quality_score: int
+
+
+class AnalystValuation(StrictModel):
+    pe: str
+    sector_pe: str
+    peg: str
+    fcf_yield: str
+    fair_value_range: list[float]
+    margin_of_safety: str
+    rvs_score: int
+
+
+class AnalystTiming(StrictModel):
+    price_vs_200dma: str
+    momentum: Literal["Bullish", "Neutral", "Bearish"]
+    fii_trend: str
+    timing_signal: Literal["Favorable", "Neutral", "Risky"]
+
+
+class AnalystCapitalEfficiency(StrictModel):
+    roic_trend: str
+    reinvestment_quality: str
+    capital_efficiency_score: int
+
+
+class AnalystRiskMatrix(StrictModel):
+    structural_risks: list[str] = Field(default_factory=list)
+    cyclical_risks: list[str] = Field(default_factory=list)
+    company_risks: list[str] = Field(default_factory=list)
+    risk_level: Literal["Low", "Medium", "High"]
+
+
+class AnalystActionPlan(StrictModel):
+    buy_zone: list[float]
+    add_zone: float
+    hold_zone: str
+    trim_zone: float
+    stop_loss: float
+
+
+class AnalystPositionSizing(StrictModel):
+    suggested_allocation: str
+    max_allocation: str
+
+
+class AnalystFinalVerdict(StrictModel):
+    verdict: Literal["BUY", "ADD", "HOLD", "TRIM", "EXIT"]
+    confidence: Literal["High", "Medium", "Low", "HIGH", "MEDIUM", "LOW"]
+
+
+class AnalystMonitoring(StrictModel):
+    next_triggers: list[str] = Field(default_factory=list)
+    key_metrics: list[str] = Field(default_factory=list)
+    red_flags: list[str] = Field(default_factory=list)
+
+
+class AnalystReportCard(StrictModel):
+    stock_snapshot: AnalystStockSnapshot
+    thesis: AnalystThesis
+    growth_engine: AnalystGrowthEngine
+    quality: AnalystQuality
+    valuation: AnalystValuation
+    timing: AnalystTiming
+    capital_efficiency: AnalystCapitalEfficiency
+    risk_matrix: AnalystRiskMatrix
+    action_plan: AnalystActionPlan
+    position_sizing: AnalystPositionSizing
+    final_verdict: AnalystFinalVerdict
+    monitoring: AnalystMonitoring
+
+
 class Verdict(str, Enum):
     STRONG_BUY = "STRONG_BUY"
     BUY = "BUY"

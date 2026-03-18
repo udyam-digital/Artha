@@ -52,6 +52,89 @@ def make_holding() -> Holding:
     )
 
 
+def make_report_card_code(ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD") -> str:
+    return f"""
+output = {{
+    "stock_snapshot": {{
+        "name": "{name}",
+        "ticker": "{ticker}",
+        "sector": "Technology",
+        "market_cap_category": "Mid",
+        "52w_high": 1928.0,
+        "52w_low": 980.0,
+        "current_price": 1420.0,
+        "time_horizon": "Compounder"
+    }},
+    "thesis": {{
+        "core_idea": "Engineering-led software franchise.",
+        "growth_driver": "Auto software demand remains healthy.",
+        "edge": "Deep domain capability.",
+        "trigger": "Large deal pipeline conversion"
+    }},
+    "growth_engine": {{
+        "revenue_cagr": "24%",
+        "eps_cagr": "22%",
+        "sector_tailwind": "High",
+        "growth_score": 8
+    }},
+    "quality": {{
+        "roce": "28%",
+        "roe": "24%",
+        "debt_to_equity": "0.02",
+        "fcf_status": "Positive",
+        "governance_flags": "None identified",
+        "quality_score": 8
+    }},
+    "valuation": {{
+        "pe": "52x",
+        "sector_pe": "48x",
+        "peg": "2.1",
+        "fcf_yield": "1.8%",
+        "fair_value_range": [1300, 1500],
+        "margin_of_safety": "Limited",
+        "rvs_score": 6
+    }},
+    "timing": {{
+        "price_vs_200dma": "+6%",
+        "momentum": "Neutral",
+        "fii_trend": "Stable",
+        "timing_signal": "Neutral"
+    }},
+    "capital_efficiency": {{
+        "roic_trend": "Improving",
+        "reinvestment_quality": "Disciplined",
+        "capital_efficiency_score": 8
+    }},
+    "risk_matrix": {{
+        "structural_risks": ["Auto program delays"],
+        "cyclical_risks": ["Global auto slowdown"],
+        "company_risks": ["Execution slippage"],
+        "risk_level": "Medium"
+    }},
+    "action_plan": {{
+        "buy_zone": [1250, 1350],
+        "add_zone": 1380,
+        "hold_zone": "1350-1550",
+        "trim_zone": 1650,
+        "stop_loss": 1180
+    }},
+    "position_sizing": {{
+        "suggested_allocation": "5-6%",
+        "max_allocation": "8%"
+    }},
+    "final_verdict": {{
+        "verdict": "{final_verdict}",
+        "confidence": "High"
+    }},
+    "monitoring": {{
+        "next_triggers": ["Quarterly margin trajectory"],
+        "key_metrics": ["Large-deal wins"],
+        "red_flags": ["Client concentration rise"]
+    }}
+}}
+"""
+
+
 async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> None:
     tool_use_response = SimpleNamespace(
         stop_reason="tool_use",
@@ -64,17 +147,12 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
         content=[
             SimpleNamespace(
                 type="text",
-                text=(
-                    '<verdict>{"tradingsymbol":"KPITTECH","company_name":"KPIT Tech","verdict":"BUY",'
-                    '"confidence":"HIGH","thesis_intact":true,"bull_case":"Execution remains strong.",'
-                    '"bear_case":"Auto cycle could soften.","what_to_watch":"Deal wins","red_flags":[],'
-                    '"rebalance_action":"BUY","rebalance_rupees":5000,'
-                    '"rebalance_reasoning":"Drift and intact thesis support adding.",'
-                    '"data_sources":["https://example.com"]}</verdict>'
-                ),
+                text=make_report_card_code("KPITTECH"),
             )
         ],
     )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.chdir(tmp_path)
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
@@ -83,9 +161,11 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
         client=FakeAnthropicClient([tool_use_response, final_response]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
+    monkeypatch.undo()
     assert verdict.verdict == "BUY"
-    assert verdict.current_price == 80.0
+    assert verdict.current_price == 1420.0
     assert verdict.error is None
+    assert (tmp_path / "data" / "companies" / "KPITTECH.json").exists()
 
 
 async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
@@ -147,13 +227,7 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
         content=[
             SimpleNamespace(
                 type="text",
-                text=(
-                    '<verdict>{"tradingsymbol":"INFY","company_name":"Infosys","verdict":"HOLD",'
-                    '"confidence":"MEDIUM","thesis_intact":true,"bull_case":"Cash generation remains solid.",'
-                    '"bear_case":"Growth may stay muted.","what_to_watch":"Large-deal TCV","red_flags":[],'
-                    '"rebalance_action":"HOLD","rebalance_rupees":0,'
-                    '"rebalance_reasoning":"Standalone research only.","data_sources":["https://example.com"]}</verdict>'
-                ),
+                text=make_report_card_code("INFY", name="Infosys", final_verdict="HOLD"),
             )
         ],
     )
@@ -170,6 +244,8 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
         pnl_pct=0.0,
         instrument_token=0,
     )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.chdir(tmp_path)
     verdict = await analyse_stock(
         holding=holding,
         portfolio_total_value=0.0,
@@ -178,6 +254,8 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
         client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
+    monkeypatch.undo()
     assert verdict.tradingsymbol == "INFY"
-    assert verdict.current_price == 0.0
+    assert verdict.current_price == 1420.0
     assert verdict.error is None
+    assert (tmp_path / "data" / "companies" / "INFY.json").exists()
