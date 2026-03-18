@@ -4,10 +4,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+from asyncio import wait_for
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +24,10 @@ class ToolExecutionError(RuntimeError):
     pass
 
 
-@dataclass(slots=True)
+@dataclass
 class MCPServerDefinition:
+    transport: str
+    url: str | None
     command: str
     args: list[str]
     env: dict[str, str]
@@ -47,34 +51,44 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _read_claude_desktop_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise ToolExecutionError(
-            f"Claude Desktop config not found at {path}. Configure the kite MCP server first."
-        )
-    return json.loads(path.read_text(encoding="utf-8"))
+def _holding_market_value(item: dict[str, Any]) -> float:
+    current_value = _coerce_float(item.get("current_value"))
+    if current_value:
+        return current_value
+    quantity = _coerce_float(item.get("quantity"))
+    last_price = _coerce_float(item.get("last_price"))
+    return quantity * last_price
 
 
 def load_kite_server_definition(settings: Settings | None = None) -> MCPServerDefinition:
     settings = settings or get_settings()
-    config = _read_claude_desktop_config(settings.claude_desktop_config_path)
-    mcp_servers = config.get("mcpServers", {})
-    server = mcp_servers.get(settings.kite_mcp_server_name)
-    if not server:
+    if settings.kite_mcp_url.strip():
+        return MCPServerDefinition(
+            transport="http",
+            url=settings.kite_mcp_url,
+            command="",
+            args=[],
+            env={},
+        )
+
+    if not settings.kite_mcp_command.strip():
         raise ToolExecutionError(
-            f"No '{settings.kite_mcp_server_name}' MCP server found in Claude Desktop config."
+            "Kite MCP is not configured for Artha. Set KITE_MCP_URL or KITE_MCP_COMMAND in .env."
         )
 
     return MCPServerDefinition(
-        command=server["command"],
-        args=list(server.get("args", [])),
-        env={str(k): str(v) for k, v in server.get("env", {}).items()},
+        transport="stdio",
+        url=None,
+        command=settings.kite_mcp_command,
+        args=settings.kite_mcp_args,
+        env=settings.kite_mcp_env_json,
     )
 
 
 class KiteMCPClient:
-    def __init__(self, definition: MCPServerDefinition):
+    def __init__(self, definition: MCPServerDefinition, timeout_seconds: int = 30):
         self.definition = definition
+        self.timeout_seconds = timeout_seconds
         self._stack = AsyncExitStack()
         self._session = None
 
@@ -82,25 +96,53 @@ class KiteMCPClient:
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
         except ImportError as exc:
             raise ToolExecutionError(
                 "The 'mcp' package is required for Kite MCP access. Install requirements first."
             ) from exc
 
-        env = dict(os.environ)
-        env.update(self.definition.env)
-        server_params = StdioServerParameters(
-            command=self.definition.command,
-            args=self.definition.args,
-            env=env,
-        )
-        read, write = await self._stack.enter_async_context(stdio_client(server_params))
-        self._session = await self._stack.enter_async_context(ClientSession(read, write))
-        await self._session.initialize()
+        try:
+            if self.definition.transport == "http":
+                read, write, _ = await self._stack.enter_async_context(
+                    streamable_http_client(self.definition.url or "")
+                )
+            else:
+                env = dict(os.environ)
+                env.update(self.definition.env)
+                server_params = StdioServerParameters(
+                    command=self.definition.command,
+                    args=self.definition.args,
+                    env=env,
+                )
+                read, write = await wait_for(
+                    self._stack.enter_async_context(stdio_client(server_params)),
+                    timeout=self.timeout_seconds,
+                )
+            self._session = await wait_for(
+                self._stack.enter_async_context(ClientSession(read, write)),
+                timeout=self.timeout_seconds,
+            )
+            await wait_for(self._session.initialize(), timeout=self.timeout_seconds)
+        except Exception as exc:
+            try:
+                await self._stack.aclose()
+            except Exception:
+                logger.debug("Ignoring MCP cleanup error after initialization failure", exc_info=True)
+            raise ToolExecutionError(
+                "Failed to initialize Kite MCP for Artha. Verify KITE_MCP_URL or KITE_MCP_COMMAND, "
+                "network access, and your Zerodha session."
+            ) from exc
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        await self._stack.aclose()
+        try:
+            await self._stack.aclose()
+        except Exception as close_exc:
+            if self.definition.transport == "http":
+                logger.debug("Ignoring streamable HTTP shutdown bug during Kite MCP close", exc_info=True)
+                return
+            raise
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         if self._session is None:
@@ -252,12 +294,12 @@ async def kite_get_portfolio(
         )
     except Exception as exc:
         raise ToolExecutionError(
-            "Kite MCP not connected or session expired. Reconnect the 'kite' server in Claude Desktop, "
-            "complete Zerodha login, then retry."
+            "Kite MCP not connected or session expired. Start the MCP command configured for Artha, "
+            "complete Zerodha login if required, then retry."
         ) from exc
 
     holdings_payload = _extract_holdings_payload(raw_holdings)
-    total_equity_value = sum(_coerce_float(item.get("current_value")) for item in holdings_payload)
+    total_equity_value = sum(_holding_market_value(item) for item in holdings_payload)
     target_weights = _assign_target_weights(holdings_payload, explicit_targets)
     available_cash = _extract_available_cash(raw_margins)
     total_value = total_equity_value + available_cash
@@ -270,7 +312,7 @@ async def kite_get_portfolio(
         logger.info("MF holdings value excluded from rebalancing portfolio total: %.2f", mf_total_value)
 
     return PortfolioSnapshot(
-        fetched_at=datetime.now(UTC),
+        fetched_at=datetime.now(timezone.utc),
         total_value=total_value,
         available_cash=available_cash,
         holdings=holdings,
@@ -283,7 +325,7 @@ async def kite_get_price_history(
     instrument_token: int,
     days: int = 365,
 ) -> dict[str, Any]:
-    end_date = datetime.now(UTC)
+    end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=days)
 
     try:
@@ -352,18 +394,115 @@ async def kite_get_price_history(
     }
 
 
-def read_console_export(filename: str, settings: Settings | None = None) -> str:
-    settings = settings or get_settings()
-    normalized = filename.lower()
-    if not any(token in normalized for token in ("tradebook", "tax_pnl", "ledger")):
-        raise ToolExecutionError(
-            "Unsupported Console export. Use a tradebook, tax_pnl, or ledger CSV filename."
-        )
+def _artifact_path(settings: Settings, *parts: str) -> Path:
+    path = settings.kite_data_dir.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
-    file_path = settings.console_exports_dir / filename
-    if not file_path.exists():
-        raise ToolExecutionError(f"Console export not found: {file_path}")
-    return file_path.read_text(encoding="utf-8")
+
+def save_kite_artifact(
+    payload: dict[str, Any],
+    *,
+    settings: Settings | None = None,
+    category: str,
+    stem: str,
+) -> Path:
+    settings = settings or get_settings()
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    artifact = _artifact_path(settings, category, f"{timestamp}_{stem}.json")
+    artifact.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+
+    latest_artifact = _artifact_path(settings, category, f"latest_{stem}.json")
+    latest_artifact.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    return artifact
+
+
+def extract_auth_url(payload: Any) -> str | None:
+    if isinstance(payload, str):
+        match = re.search(r"https?://\S+", payload)
+        return match.group(0).rstrip(").,]}>") if match else None
+    if isinstance(payload, list):
+        for item in payload:
+            found = extract_auth_url(item)
+            if found:
+                return found
+        return None
+    if isinstance(payload, dict):
+        preferred_keys = (
+            "url",
+            "login_url",
+            "auth_url",
+            "authorize_url",
+            "redirect_url",
+        )
+        for key in preferred_keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value.rstrip(").,]}>")
+        for value in payload.values():
+            found = extract_auth_url(value)
+            if found:
+                return found
+    return None
+
+
+async def kite_login(
+    kite_client: KiteMCPClient,
+    settings: Settings | None = None,
+) -> tuple[dict[str, Any], str | None, Path]:
+    settings = settings or get_settings()
+    raw_response = await kite_client.call_tool("login")
+    payload = raw_response if isinstance(raw_response, dict) else {"raw_text": raw_response}
+    auth_url = extract_auth_url(payload)
+    if auth_url:
+        payload["auth_url"] = auth_url
+    artifact = save_kite_artifact(payload, settings=settings, category="auth", stem="login")
+    return payload, auth_url, artifact
+
+
+async def kite_get_profile(kite_client: KiteMCPClient) -> dict[str, Any]:
+    raw_response = await kite_client.call_tool("get_profile")
+    if isinstance(raw_response, dict):
+        return raw_response
+    return {"raw_text": raw_response}
+
+
+def profile_requires_login(profile: dict[str, Any]) -> bool:
+    if not profile:
+        return True
+    raw_text = str(profile.get("raw_text", "")).lower()
+    if "please log in first" in raw_text or "login tool" in raw_text:
+        return True
+    auth_markers = ("user_id", "user_name", "email", "broker", "exchanges")
+    return not any(marker in profile for marker in auth_markers)
+
+
+async def wait_for_kite_login(
+    kite_client: KiteMCPClient,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    settings = settings or get_settings()
+    deadline = time.monotonic() + settings.kite_login_timeout_seconds
+
+    while time.monotonic() < deadline:
+        profile = await kite_get_profile(kite_client)
+        if not profile_requires_login(profile):
+            return profile
+        await asyncio.sleep(settings.kite_login_poll_interval_seconds)
+
+    raise ToolExecutionError(
+        "Kite login did not complete before timeout. Finish the browser login and retry."
+    )
+
+
+def save_portfolio_snapshot(snapshot: PortfolioSnapshot, settings: Settings | None = None) -> Path:
+    settings = settings or get_settings()
+    return save_kite_artifact(
+        snapshot.model_dump(mode="json"),
+        settings=settings,
+        category="portfolio",
+        stem="snapshot",
+    )
 
 
 def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any]]:
@@ -372,7 +511,7 @@ def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any
         {
             "name": "kite_get_portfolio",
             "description": (
-                "Fetch the live Zerodha/Kite portfolio snapshot through the configured Kite MCP server. "
+                "Fetch the live Zerodha/Kite portfolio snapshot through the Kite MCP server configured for Artha. "
                 "This returns current equity holdings, cash, and total portfolio value. Use this first for "
                 "portfolio runs and before computing any rebalancing recommendation."
             ),
@@ -385,7 +524,7 @@ def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any
         {
             "name": "kite_get_price_history",
             "description": (
-                "Fetch daily historical price data for a holding from the Kite MCP server and summarize 52-week "
+                "Fetch daily historical price data for a holding from Artha's Kite MCP server and summarize 52-week "
                 "range and 1-year performance. Use this when you need price context for a stock already present "
                 "in the live portfolio."
             ),
@@ -411,20 +550,6 @@ def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any
                 "timezone": "Asia/Kolkata",
             },
         },
-        {
-            "name": "read_console_export",
-            "description": (
-                "Read a Zerodha Console CSV export from the configured console exports directory. "
-                "Only use this when the user explicitly supplied a Console CSV filename for tax-aware analysis."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "filename": {"type": "string"},
-                },
-                "required": ["filename"],
-            },
-        },
     ]
 
 
@@ -448,8 +573,6 @@ async def execute_tool_call(
                 instrument_token=int(tool_input["instrument_token"]),
                 days=int(tool_input.get("days", 365)),
             )
-        elif name == "read_console_export":
-            payload = {"filename": tool_input["filename"], "csv": read_console_export(tool_input["filename"], settings)}
         else:
             raise ToolExecutionError(f"Unknown tool requested: {name}")
 

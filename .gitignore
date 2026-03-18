@@ -1,0 +1,17 @@
+.env
+.pytest_cache/
+__pycache__/
+tests/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+reports/
+data/console_exports/*
+!data/console_exports/.gitkeep
+data/kite/*
+!data/kite/.gitkeep
+*.log

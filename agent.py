@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,30 +32,25 @@ class ArthaAgent:
     def _build_user_prompt(
         self,
         ticker: str | None = None,
-        console_filename: str | None = None,
     ) -> str:
         if ticker:
             return (
                 f"Run a single-stock deep dive for {ticker.upper()} from the live Kite portfolio. "
                 "Use kite_get_portfolio to find the holding and kite_get_price_history for price context. "
-                "Research the company with web_search. Do not create meaningful rebalancing actions; return an empty "
-                "or HOLD-only rebalancing_actions list. "
+                "Use web_search extensively to research the company with recent, source-cited coverage across "
+                "Screener, investor presentations, concalls, results coverage, and relevant news. "
+                "Do not create meaningful rebalancing actions; return an empty or HOLD-only rebalancing_actions list. "
                 "Return the final answer as JSON wrapped in <artha_report>...</artha_report> tags."
-            )
-
-        console_instruction = ""
-        if console_filename:
-            console_instruction = (
-                f" The user supplied Zerodha Console export '{console_filename}'. Read it with read_console_export "
-                "and use it for LTCG/STCG-aware sell recommendations."
             )
 
         return (
             "Analyze the live Indian equity portfolio from Kite. Start by calling kite_get_portfolio. "
-            "Use kite_get_price_history for price context where helpful, and web_search for holdings research. "
+            "For every non-passive equity holding, perform broad web_search-based research before concluding. "
+            "Use kite_get_price_history for price context where helpful, and use web_search extensively for holdings "
+            "research with recent, source-cited coverage across Screener, investor presentations, concalls, results, "
+            "and relevant sector or company news. "
             "Exclude LIQUIDBEES, NIFTYBEES, GOLDCASE, and SILVERCASE from equity rebalancing actions, but keep them "
             "in the portfolio snapshot and total value. Never include MF holdings in equity rebalancing actions."
-            f"{console_instruction} "
             "You must return exactly one JSON object wrapped in <artha_report>...</artha_report> tags that validates "
             "against the PortfolioReport schema. If data is partial, still return valid JSON and record issues in errors."
         )
@@ -74,7 +69,7 @@ class ArthaAgent:
         errors: list[str],
     ) -> PortfolioReport:
         snapshot = snapshot or PortfolioSnapshot(
-            fetched_at=datetime.now(UTC),
+            fetched_at=datetime.now(timezone.utc),
             total_value=0.0,
             available_cash=0.0,
             holdings=[],
@@ -85,7 +80,7 @@ class ArthaAgent:
             available_cash=snapshot.available_cash,
         )
         return PortfolioReport(
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
             portfolio_snapshot=snapshot,
             analyses=[],
             rebalancing_actions=actions,
@@ -117,15 +112,17 @@ class ArthaAgent:
     async def run(
         self,
         ticker: str | None = None,
-        console_filename: str | None = None,
     ) -> PortfolioReport:
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": self._build_user_prompt(ticker=ticker, console_filename=console_filename)}
+            {"role": "user", "content": self._build_user_prompt(ticker=ticker)}
         ]
         errors: list[str] = []
         latest_snapshot: PortfolioSnapshot | None = None
 
-        async with KiteMCPClient(load_kite_server_definition(self.settings)) as kite_client:
+        async with KiteMCPClient(
+            load_kite_server_definition(self.settings),
+            timeout_seconds=self.settings.kite_mcp_timeout_seconds,
+        ) as kite_client:
             for iteration in range(1, self.settings.max_iterations + 1):
                 logger.info("Agent iteration %s/%s", iteration, self.settings.max_iterations)
                 response = await self.client.messages.create(
@@ -147,6 +144,13 @@ class ArthaAgent:
                     for block in response.content:
                         if getattr(block, "type", None) != "tool_use":
                             continue
+                        if block.name == "web_search":
+                            logger.info("Artha researching via web_search")
+                        elif block.name == "kite_get_price_history":
+                            logger.info(
+                                "Artha researching price history for %s",
+                                block.input.get("tradingsymbol", "UNKNOWN"),
+                            )
                         payload, is_error, snapshot = await execute_tool_call(
                             name=block.name,
                             tool_input=block.input,
@@ -188,4 +192,3 @@ class ArthaAgent:
 
         errors.append("Agent exceeded MAX_ITERATIONS and returned a partial report.")
         return self._fallback_report("", latest_snapshot, errors)
-
