@@ -93,7 +93,7 @@ Each verdict is a `StockVerdict` with:
 - `thesis_intact`, bull/bear cases, watch item, red flags
 - market fields: current price, buy price, P&L%
 - final rebalance action, rupee sizing, and reasoning
-- source URLs, duration, and optional error
+- source URLs from the saved analyst report card, duration, and optional error
 
 The CLI prints:
 

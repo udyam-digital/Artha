@@ -130,7 +130,11 @@ output = {{
         "next_triggers": ["Quarterly margin trajectory"],
         "key_metrics": ["Large-deal wins"],
         "red_flags": ["Client concentration rise"]
-    }}
+    }},
+    "data_sources": [
+        "https://www.screener.in/company/{ticker}/",
+        "https://www.example.com/{ticker.lower()}-results"
+    ]
 }}
 """
 
@@ -165,6 +169,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     assert verdict.verdict == "BUY"
     assert verdict.current_price == 1420.0
     assert verdict.error is None
+    assert len(verdict.data_sources) == 2
     assert (tmp_path / "data" / "companies" / "KPITTECH.json").exists()
 
 
@@ -258,4 +263,5 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
     assert verdict.tradingsymbol == "INFY"
     assert verdict.current_price == 1420.0
     assert verdict.error is None
+    assert len(verdict.data_sources) == 2
     assert (tmp_path / "data" / "companies" / "INFY.json").exists()

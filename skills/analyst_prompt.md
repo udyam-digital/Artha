@@ -113,7 +113,9 @@ OUTPUT STRUCTURE:
     "next_triggers": [],
     "key_metrics": [],
     "red_flags": []
-  }
+  },
+
+  "data_sources": []
 }
 
 ---

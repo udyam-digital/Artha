@@ -153,6 +153,7 @@ class AnalystReportCard(StrictModel):
     position_sizing: AnalystPositionSizing
     final_verdict: AnalystFinalVerdict
     monitoring: AnalystMonitoring
+    data_sources: list[str] = Field(default_factory=list)
 
 
 class Verdict(str, Enum):

@@ -166,7 +166,7 @@ def _report_card_to_stock_verdict(
             f"Analyst report card verdict is {final_signal}, with timing {report_card.timing.timing_signal.lower()} "
             f"and risk level {report_card.risk_matrix.risk_level.lower()}."
         ),
-        data_sources=[],
+        data_sources=report_card.data_sources,
         analysis_duration_seconds=duration_seconds,
         error=None,
     )
