@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
-from models import Holding, PortfolioSnapshot
+from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
 from rebalance import PASSIVE_INSTRUMENTS
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,32 @@ def _extract_mf_value(raw_mf_holdings: Any) -> float:
     return total
 
 
+def _normalize_mf_holding(item: dict[str, Any]) -> MFHolding:
+    quantity = _coerce_float(item.get("quantity"))
+    average_price = _coerce_float(item.get("average_price"))
+    last_price = _coerce_float(item.get("last_price"))
+    current_value = _coerce_float(item.get("current_value"), default=quantity * last_price)
+    pnl = _coerce_float(item.get("pnl"), default=current_value - (average_price * quantity))
+    base_value = average_price * quantity
+    pnl_pct = _coerce_float(
+        item.get("pnl_percentage"),
+        default=((pnl / base_value) * 100.0 if base_value else 0.0),
+    )
+    return MFHolding(
+        tradingsymbol=str(item.get("tradingsymbol", item.get("symbol", ""))).upper(),
+        fund=str(item.get("fund", item.get("scheme_name", item.get("name", "")))),
+        folio=str(item.get("folio", "")),
+        quantity=quantity,
+        average_price=average_price,
+        last_price=last_price,
+        current_value=current_value,
+        pnl=pnl,
+        pnl_pct=pnl_pct,
+        scheme_type=str(item.get("scheme_type", item.get("type", ""))),
+        plan=str(item.get("plan", "")),
+    )
+
+
 def _parse_target_weights_from_rules(rules_path: Path) -> dict[str, float]:
     if not rules_path.exists():
         return {}
@@ -315,6 +341,26 @@ async def kite_get_portfolio(
         fetched_at=datetime.now(timezone.utc),
         total_value=total_value,
         available_cash=available_cash,
+        holdings=holdings,
+    )
+
+
+async def kite_get_mf_snapshot(
+    kite_client: KiteMCPClient,
+    settings: Settings | None = None,
+) -> MFSnapshot:
+    del settings
+    try:
+        raw_mf_holdings = await kite_client.call_tool("get_mf_holdings")
+    except Exception as exc:
+        raise ToolExecutionError("Failed to fetch MF holdings from Kite MCP.") from exc
+
+    payload = _extract_holdings_payload(raw_mf_holdings)
+    holdings = [_normalize_mf_holding(item) for item in payload]
+    total_value = sum(holding.current_value for holding in holdings)
+    return MFSnapshot(
+        fetched_at=datetime.now(timezone.utc),
+        total_value=total_value,
         holdings=holdings,
     )
 
@@ -495,14 +541,19 @@ async def wait_for_kite_login(
     )
 
 
-def save_portfolio_snapshot(snapshot: PortfolioSnapshot, settings: Settings | None = None) -> Path:
-    settings = settings or get_settings()
-    return save_kite_artifact(
-        snapshot.model_dump(mode="json"),
-        settings=settings,
-        category="portfolio",
-        stem="snapshot",
-    )
+def get_web_search_tool_definition() -> dict[str, Any]:
+    return {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 12,
+        "user_location": {
+            "type": "approximate",
+            "city": "Bengaluru",
+            "region": "Karnataka",
+            "country": "IN",
+            "timezone": "Asia/Kolkata",
+        },
+    }
 
 
 def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any]]:
@@ -538,18 +589,7 @@ def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any
                 "required": ["tradingsymbol", "instrument_token"],
             },
         },
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 12,
-            "user_location": {
-                "type": "approximate",
-                "city": "Bengaluru",
-                "region": "Karnataka",
-                "country": "IN",
-                "timezone": "Asia/Kolkata",
-            },
-        },
+        get_web_search_tool_definition(),
     ]
 
 

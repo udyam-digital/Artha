@@ -12,21 +12,25 @@ The project is analysis-only. Do not add auto-trading or order-placement behavio
 
 ## Main Entry Points
 
-- `main.py`: CLI entrypoint for auth, sync, holdings, and report generation
+- `main.py`: CLI entrypoint for auth, sync, report generation, and deep research
 - `agent.py`: `ArthaAgent` loop, prompt construction, tool handling, and final report parsing
-- `tools.py`: Kite MCP client, tool execution, console export loading, and helper parsing
+- `tools.py`: Kite MCP client, tool execution, native tool definitions, and helper parsing
+- `kite_runtime.py`: hosted Kite auth/session checks plus fresh equity and MF snapshot sync
+- `snapshot_store.py`: local snapshot and research artifact persistence
+- `research.py`: deep-research orchestration for one holding-level sub-agent per equity and MF holding
 - `rebalance.py`: Portfolio drift and action calculation
-- `models.py`: Pydantic schemas for holdings, snapshots, analyses, and reports
+- `models.py`: Pydantic schemas for holdings, snapshots, analyses, reports, and research artifacts
 - `config.py`: environment-driven settings and directory initialization
 
 ## Runtime Flow
 
 1. Load settings from `.env`.
 2. Connect to Kite MCP over HTTP or stdio.
-3. Pull live holdings and related portfolio data.
-4. Let the LLM call tools, especially `web_search`, before producing a final report.
-5. Validate the final response as `PortfolioReport`.
-6. Persist a JSON report under `reports/`.
+3. Pull fresh equity holdings, MF holdings, margins, and profile data.
+4. Persist fresh local snapshots under `data/kite/portfolio/` and `data/kite/mf/`.
+5. Let the LLM call tools, especially `web_search`, before producing a final report.
+6. Validate the final response as `PortfolioReport`.
+7. Persist JSON outputs under `reports/`.
 
 If report parsing fails, the app falls back to a rebalance-oriented report with captured errors.
 
@@ -39,6 +43,7 @@ If report parsing fails, the app falls back to a rebalance-oriented report with 
 .venv/bin/python main.py run
 .venv/bin/python main.py run --ticker KPITTECH
 .venv/bin/python main.py run --rebalance-only
+.venv/bin/python main.py research
 ```
 
 ## Environment
@@ -63,11 +68,6 @@ KITE_MCP_ARGS=[]
 KITE_MCP_ENV_JSON={}
 KITE_MCP_TIMEOUT_SECONDS=30
 KITE_DATA_DIR=./data/kite
-KITE_API_KEY=
-KITE_API_SECRET=
-APP_MODE=http
-APP_PORT=8080
-APP_HOST=localhost
 ```
 
 Notes:
@@ -81,7 +81,9 @@ Notes:
 - `skills/`: system prompt source material
 - `data/kite/auth/`: saved Kite auth artifacts
 - `data/kite/portfolio/`: saved portfolio snapshots
+- `data/kite/mf/`: saved MF snapshots
 - `reports/`: generated JSON reports
+- `reports/research/`: per-holding research artifacts and combined digests
 - `tests/`: unit tests
 
 ## Agent Constraints
@@ -90,6 +92,7 @@ Notes:
 - Use live Kite data for holdings-based decisions.
 - Keep passive instruments out of equity rebalance actions as defined in `rebalance.py`.
 - Do not include MF holdings in equity rebalance actions.
+- Persist MF holdings locally even though they are excluded from rebalancing.
 - For full runs, retain the deep-research behavior built around `web_search`.
 - Keep final LLM output wrapped in `<artha_report>...</artha_report>` and valid against `PortfolioReport`.
 - Prefer graceful degradation over crashes when tool output is partial or malformed.
@@ -150,3 +153,4 @@ Focused test runs:
 Always USE-
 - Always use context7 mcp, and locally save responses and always be context aware, and keep updating it.
 - Make a suggestions.md file, where you give your suggestions and give these Like an expert Gen Ai Architect
+- Always Update README.md so it shows exactly what we have currently 

@@ -6,7 +6,7 @@ Artha is a read-only portfolio research and rebalancing agent for Indian equity 
 
 - Python 3.11+
 - Anthropic API key with web search enabled
-- A working Kite MCP command you can run from this machine
+- Access to Zerodha’s hosted Kite MCP or a working Kite MCP command you can run from this machine
 
 ## Setup
 
@@ -27,14 +27,14 @@ KITE_MCP_TIMEOUT_SECONDS=30
 KITE_DATA_DIR=./data/kite
 ```
 
-Authenticate Kite MCP first:
+Authenticate and sync fresh snapshots:
 
 ```bash
 .venv/bin/python main.py kite-login
 .venv/bin/python main.py kite-sync
 ```
 
-`kite-login` is the supported auth flow. It keeps the same MCP session alive while you complete browser login, then fetches and stores a live snapshot once authentication succeeds. `kite-sync` fetches your live profile and holdings, then stores a portfolio snapshot under `data/kite/portfolio/`.
+`kite-login` is the supported auth flow. It keeps the same MCP session alive while you complete browser login, then fetches and stores fresh equity and MF snapshots once authentication succeeds. `kite-sync` is the same sync primitive without a separate report step.
 
 ## Usage
 
@@ -44,8 +44,24 @@ Authenticate Kite MCP first:
 .venv/bin/python main.py run
 .venv/bin/python main.py run --ticker KPITTECH
 .venv/bin/python main.py run --rebalance-only
+.venv/bin/python main.py research
 .venv/bin/python main.py holdings
 ```
+
+Supported flows:
+
+- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, and generates the portfolio report
+- `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
+- `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
+- `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
+
+Data layout:
+
+- `data/kite/auth/`: login artifacts
+- `data/kite/portfolio/`: latest and historical equity snapshots
+- `data/kite/mf/`: latest and historical MF snapshots
+- `reports/`: portfolio reports
+- `reports/research/`: per-holding research files, combined digest, and index artifacts
 
 ## Cost Estimate
 

@@ -32,9 +32,17 @@ class ArthaAgent:
     def _build_user_prompt(
         self,
         ticker: str | None = None,
+        prefetched_snapshot: PortfolioSnapshot | None = None,
     ) -> str:
+        snapshot_context = ""
+        if prefetched_snapshot is not None:
+            snapshot_context = (
+                "Use this freshly synced portfolio snapshot as ground truth for holdings, weights, and cash. "
+                f"Snapshot JSON:\n{prefetched_snapshot.model_dump_json(indent=2)}\n\n"
+            )
+
         if ticker:
-            return (
+            return snapshot_context + (
                 f"Run a single-stock deep dive for {ticker.upper()} from the live Kite portfolio. "
                 "Use kite_get_portfolio to find the holding and kite_get_price_history for price context. "
                 "Use web_search extensively to research the company with recent, source-cited coverage across "
@@ -43,7 +51,7 @@ class ArthaAgent:
                 "Return the final answer as JSON wrapped in <artha_report>...</artha_report> tags."
             )
 
-        return (
+        return snapshot_context + (
             "Analyze the live Indian equity portfolio from Kite. Start by calling kite_get_portfolio. "
             "For every non-passive equity holding, perform broad web_search-based research before concluding. "
             "Use kite_get_price_history for price context where helpful, and use web_search extensively for holdings "
@@ -112,12 +120,19 @@ class ArthaAgent:
     async def run(
         self,
         ticker: str | None = None,
+        prefetched_snapshot: PortfolioSnapshot | None = None,
     ) -> PortfolioReport:
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": self._build_user_prompt(ticker=ticker)}
+            {
+                "role": "user",
+                "content": self._build_user_prompt(
+                    ticker=ticker,
+                    prefetched_snapshot=prefetched_snapshot,
+                ),
+            }
         ]
         errors: list[str] = []
-        latest_snapshot: PortfolioSnapshot | None = None
+        latest_snapshot: PortfolioSnapshot | None = prefetched_snapshot
 
         async with KiteMCPClient(
             load_kite_server_definition(self.settings),

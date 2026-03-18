@@ -9,19 +9,11 @@ from pathlib import Path
 
 from agent import ArthaAgent
 from config import configure_logging, get_settings
-from models import PortfolioReport, PortfolioSnapshot
+from kite_runtime import KiteSyncResult, sync_kite_data
+from models import PortfolioReport, PortfolioSnapshot, ResearchDigest
 from rebalance import calculate_rebalancing_actions
-from tools import (
-    KiteMCPClient,
-    ToolExecutionError,
-    kite_get_portfolio,
-    kite_get_profile,
-    kite_login,
-    load_kite_server_definition,
-    profile_requires_login,
-    save_portfolio_snapshot,
-    wait_for_kite_login,
-)
+from research import DeepResearchOrchestrator
+from tools import ToolExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -124,12 +116,29 @@ def print_kite_login_result(auth_artifact: Path, auth_url: str | None, portfolio
     print(f"Portfolio snapshot saved to: {portfolio_artifact}")
 
 
-def print_kite_sync_result(profile: dict[str, object], snapshot: PortfolioSnapshot, artifact_path: Path) -> None:
+def print_kite_sync_result(result: KiteSyncResult) -> None:
     print("KITE MCP SYNC")
-    if profile:
-        print(f"Profile fetched: {profile.get('user_name') or profile.get('user_id') or 'available'}")
-    print_holdings(snapshot)
-    print(f"Portfolio snapshot saved to: {artifact_path}")
+    if result.profile:
+        print(f"Profile fetched: {result.profile.get('user_name') or result.profile.get('user_id') or 'available'}")
+    if result.auth_url:
+        print(f"Login URL used: {result.auth_url}")
+    print_holdings(result.portfolio_snapshot)
+    print(f"Portfolio snapshot saved to: {result.portfolio_artifact}")
+    print(f"MF snapshot saved to: {result.mf_artifact}")
+
+
+def print_research_result(digest: ResearchDigest, digest_path: Path, holding_paths: list[Path], index_path: Path) -> None:
+    print("ARTHA DEEP RESEARCH")
+    print(f"Equity reports: {len(digest.equity_reports)}")
+    print(f"MF reports:     {len(digest.mf_reports)}")
+    if digest.errors:
+        print(f"Errors:         {len(digest.errors)}")
+    print()
+    print(digest.portfolio_digest)
+    print()
+    print(f"Combined digest saved to: {digest_path}")
+    print(f"Research index saved to:  {index_path}")
+    print(f"Holding reports saved:    {len(holding_paths)}")
 
 
 def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
@@ -140,25 +149,22 @@ def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
     return output_path
 
 
-def build_kite_client(settings) -> KiteMCPClient:
-    return KiteMCPClient(
-        load_kite_server_definition(settings),
-        timeout_seconds=settings.kite_mcp_timeout_seconds,
-    )
-
-
 async def handle_run(args: argparse.Namespace) -> int:
     settings = get_settings()
     if args.rebalance_only and args.ticker:
         raise ValueError("--ticker cannot be combined with --rebalance-only")
 
     if args.rebalance_only:
-        async with build_kite_client(settings) as kite_client:
-            snapshot = await kite_get_portfolio(kite_client, settings=settings)
+        sync_result = await sync_kite_data(settings=settings)
+        snapshot = sync_result.portfolio_snapshot
         report = build_rebalance_only_report(snapshot)
     else:
+        sync_result = await sync_kite_data(settings=settings)
         agent = ArthaAgent(settings=settings)
-        report = await agent.run(ticker=args.ticker)
+        report = await agent.run(
+            ticker=args.ticker,
+            prefetched_snapshot=sync_result.portfolio_snapshot,
+        )
 
     output_path = save_report(report, settings.reports_dir)
     print_report(report)
@@ -169,37 +175,29 @@ async def handle_run(args: argparse.Namespace) -> int:
 
 async def handle_holdings() -> int:
     settings = get_settings()
-    async with build_kite_client(settings) as kite_client:
-        snapshot = await kite_get_portfolio(kite_client, settings=settings)
+    sync_result = await sync_kite_data(settings=settings)
+    snapshot = sync_result.portfolio_snapshot
     print_holdings(snapshot)
     return 0
 
 
 async def handle_kite_sync() -> int:
-    settings = get_settings()
-    async with build_kite_client(settings) as kite_client:
-        profile = await kite_get_profile(kite_client)
-        snapshot = await kite_get_portfolio(kite_client, settings=settings)
-    artifact_path = save_portfolio_snapshot(snapshot, settings=settings)
-    print_kite_sync_result(profile, snapshot, artifact_path)
+    result = await sync_kite_data(settings=get_settings())
+    print_kite_sync_result(result)
     return 0
 
 
 async def handle_kite_login() -> int:
-    settings = get_settings()
-    async with build_kite_client(settings) as kite_client:
-        payload, auth_url, auth_artifact = await kite_login(kite_client, settings=settings)
-        initial_profile = await kite_get_profile(kite_client)
-        if profile_requires_login(initial_profile):
-            if auth_url:
-                print(f"Complete Kite login in your browser: {auth_url}")
-                print("Waiting for login confirmation...")
-            profile = await wait_for_kite_login(kite_client, settings=settings)
-        else:
-            profile = initial_profile
-        snapshot = await kite_get_portfolio(kite_client, settings=settings)
-    portfolio_artifact = save_portfolio_snapshot(snapshot, settings=settings)
-    print_kite_login_result(auth_artifact, auth_url, portfolio_artifact)
+    result = await sync_kite_data(settings=get_settings())
+    print_kite_login_result(result.auth_artifact or result.portfolio_artifact, result.auth_url, result.portfolio_artifact)
+    print(f"MF snapshot saved to: {result.mf_artifact}")
+    return 0
+
+
+async def handle_research() -> int:
+    orchestrator = DeepResearchOrchestrator(settings=get_settings())
+    digest, digest_path, holding_paths, index_path = await orchestrator.research_latest_snapshots()
+    print_research_result(digest, digest_path, holding_paths, index_path)
     return 0
 
 
@@ -217,7 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("holdings", help="Print the current holdings table without an LLM call")
     subparsers.add_parser("kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot")
-    subparsers.add_parser("kite-sync", help="Fetch profile and holdings from Kite MCP and save a local snapshot")
+    subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
+    subparsers.add_parser("research", help="Run deep web research on the latest saved equity and MF snapshots")
     return parser
 
 
@@ -236,6 +235,8 @@ async def async_main() -> int:
             return await handle_kite_login()
         if args.command == "kite-sync":
             return await handle_kite_sync()
+        if args.command == "research":
+            return await handle_research()
         parser.error("Unknown command")
         return 2
     except ToolExecutionError as exc:
