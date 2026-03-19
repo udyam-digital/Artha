@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from config import Settings
 import observability.usage as usage_tracking
 from observability.usage import (
@@ -31,12 +33,14 @@ class FakeSpanContext:
     def __init__(self) -> None:
         self.span = FakeSpan()
         self.exited = False
+        self.exit_args = None
 
     def __enter__(self) -> FakeSpan:
         return self.span
 
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
         self.exited = True
+        self.exit_args = (exc_type, exc, tb)
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -229,3 +233,35 @@ def test_record_run_error_marks_summary_failed_and_writes_error_log(tmp_path: Pa
     summary_payload = json.loads(summary.summary_path.read_text(encoding="utf-8").splitlines()[0])
     assert summary_payload["status"] == "failed"
     assert summary_payload["failed_phase"] == "analyst"
+
+
+def test_usage_run_preserves_exception_state_and_resets_context_on_summary_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = make_settings(tmp_path)
+    fake_span_cm = FakeSpanContext()
+    summary_path = settings.llm_usage_dir / "run_summaries.jsonl"
+
+    monkeypatch.setattr(usage_tracking, "start_span", lambda name, attributes=None: fake_span_cm)
+    monkeypatch.setattr(usage_tracking, "emit_span", lambda name, attributes=None: None)
+
+    original_append_jsonl = usage_tracking._append_jsonl
+
+    def flaky_append_jsonl(path: Path, payload: dict[str, object]) -> None:
+        if path == summary_path:
+            raise RuntimeError("disk full")
+        original_append_jsonl(path, payload)
+
+    monkeypatch.setattr(usage_tracking, "_append_jsonl", flaky_append_jsonl)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with usage_run(settings=settings, command="run") as summary:
+            assert usage_tracking.get_current_usage_run() is summary
+            raise RuntimeError("boom")
+
+    assert usage_tracking.get_current_usage_run() is None
+    assert fake_span_cm.exited is True
+    assert fake_span_cm.exit_args is not None
+    assert fake_span_cm.exit_args[0] is RuntimeError
+    assert str(fake_span_cm.exit_args[1]) == "boom"

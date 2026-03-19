@@ -206,19 +206,39 @@ def usage_run(*, settings: Settings, command: str):
     summary._span_cm = span_cm
     summary._span = span_cm.__enter__()
     token: Token[UsageRunSummary | None] = _CURRENT_RUN.set(summary)
+    exc_info: tuple[type[BaseException] | None, BaseException | None, Any | None] = (None, None, None)
+    finalizer_error: Exception | None = None
     try:
-        yield summary
+        try:
+            yield summary
+        except BaseException as exc:
+            exc_info = (type(exc), exc, exc.__traceback__)
+            if summary.status == "success":
+                summary.status = "failed"
+                summary.error_message = str(exc)
+            raise
+        finally:
+            try:
+                completed_at = _utc_now()
+                summary_record = _summary_record(summary, completed_at=completed_at)
+                if summary._span is not None:
+                    summary._span.set_attribute("artha.total_estimated_cost_usd", summary_record["total_estimated_cost_usd"])
+                    summary._span.set_attribute("artha.total_entries", summary.total_entries)
+                    summary._span.set_attribute("artha.total_web_search_requests", summary.total_web_search_requests)
+                _append_jsonl(summary.summary_path, summary_record)
+            except Exception as exc:
+                finalizer_error = exc
+                if exc_info[1] is not None:
+                    logger.exception("Failed to persist usage summary after run error")
+            finally:
+                try:
+                    if summary._span_cm is not None:
+                        summary._span_cm.__exit__(*exc_info)
+                finally:
+                    _CURRENT_RUN.reset(token)
     finally:
-        completed_at = _utc_now()
-        summary_record = _summary_record(summary, completed_at=completed_at)
-        _append_jsonl(summary.summary_path, summary_record)
-        if summary._span is not None:
-            summary._span.set_attribute("artha.total_estimated_cost_usd", summary_record["total_estimated_cost_usd"])
-            summary._span.set_attribute("artha.total_entries", summary.total_entries)
-            summary._span.set_attribute("artha.total_web_search_requests", summary.total_web_search_requests)
-        if summary._span_cm is not None:
-            summary._span_cm.__exit__(None, None, None)
-        _CURRENT_RUN.reset(token)
+        if finalizer_error is not None and exc_info[1] is None:
+            raise finalizer_error
 
 
 def get_current_usage_run() -> UsageRunSummary | None:

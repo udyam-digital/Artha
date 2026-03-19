@@ -46,6 +46,13 @@ def test_build_exporter_config_uses_generic_otlp_when_langfuse_missing(tmp_path:
     assert headers == {"x-test": "1"}
 
 
+def test_redact_endpoint_for_logs_removes_query_and_credentials() -> None:
+    redacted = telemetry._redact_endpoint_for_logs(  # noqa: SLF001
+        "https://user:secret@example.com:4318/v1/traces?api_key=secret-token"
+    )
+    assert redacted == "https://example.com:4318/v1/traces"
+
+
 def test_build_exporter_config_returns_none_when_disabled_or_unconfigured(tmp_path: Path) -> None:
     disabled = make_settings(tmp_path, TELEMETRY_ENABLED=False)
     assert build_exporter_config(disabled) is None

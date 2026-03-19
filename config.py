@@ -128,14 +128,36 @@ class Settings(BaseSettings):
         if isinstance(value, dict):
             return {str(key): str(val) for key, val in value.items()}
         if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return {}
             try:
-                parsed: Any = loads(value)
-            except JSONDecodeError as exc:
-                raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must be a JSON object string.") from exc
-            if not isinstance(parsed, dict):
-                raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must decode to an object.")
-            return {str(key): str(val) for key, val in parsed.items()}
-        raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must be a dict or JSON object string.")
+                parsed: Any = loads(raw)
+            except JSONDecodeError:
+                return cls._parse_otel_header_pairs(raw)
+            if isinstance(parsed, dict):
+                return {str(key): str(val) for key, val in parsed.items()}
+            return cls._parse_otel_header_pairs(raw)
+        raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must be a dict, JSON object string, or KEY=VALUE pairs.")
+
+    @classmethod
+    def _parse_otel_header_pairs(cls, raw: str) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for part in raw.split(","):
+            item = part.strip()
+            if not item:
+                continue
+            key, sep, val = item.partition("=")
+            if not sep or not key.strip() or not val.strip():
+                raise ValueError(
+                    "OTEL_EXPORTER_OTLP_HEADERS must be a JSON object string or comma-separated KEY=VALUE pairs."
+                )
+            headers[key.strip()] = val.strip()
+        if not headers:
+            raise ValueError(
+                "OTEL_EXPORTER_OTLP_HEADERS must be a JSON object string or comma-separated KEY=VALUE pairs."
+            )
+        return headers
 
 
 @lru_cache(maxsize=1)

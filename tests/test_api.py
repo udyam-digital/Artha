@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import api.main as api_main
+from application.reporting import ReportParseError
 from config import Settings
 from models import Holding, MFSnapshot, MFHolding, PortfolioReport, PortfolioSnapshot, StockVerdict, Verdict
 from reliability import FullRunFailed
@@ -111,6 +113,26 @@ def test_report_detail_and_latest(monkeypatch, tmp_path: Path) -> None:
     assert detail.status_code == 200
     assert latest.json()["portfolio_summary"] == "Summary"
     assert detail.json()["verdicts"][0]["tradingsymbol"] == "KPITTECH"
+
+
+def test_report_parse_errors_return_generic_500s(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "get_latest_report", lambda _: (_ for _ in ()).throw(ReportParseError("leaked path")))
+    monkeypatch.setattr(
+        api_main,
+        "get_report_by_id",
+        lambda _settings, _report_id: (_ for _ in ()).throw(ReportParseError("raw payload")),
+    )
+    client = TestClient(api_main.create_app())
+
+    latest = client.get("/api/reports/latest")
+    detail = client.get("/api/reports/some-report")
+
+    assert latest.status_code == 500
+    assert detail.status_code == 500
+    assert latest.json()["detail"] == api_main.REPORT_PARSE_ERROR_DETAIL
+    assert detail.json()["detail"] == api_main.REPORT_PARSE_ERROR_DETAIL
 
 
 def test_price_history_uses_latest_report_holding(monkeypatch, tmp_path: Path) -> None:
@@ -344,6 +366,51 @@ def test_run_endpoint_streams_structured_sse_events(monkeypatch, tmp_path: Path)
     assert complete_events[0]["data"]["report_id"] is not None
 
 
+def test_ticker_only_run_skips_kite_auth_preflight(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    report = make_report()
+
+    async def fake_single_company_analysis(*, settings, ticker, exchange):
+        assert settings is not None
+        assert ticker == "KPITTECH"
+        assert exchange == "NSE"
+        return report
+
+    def unexpected_build_kite_client(_settings):
+        raise AssertionError("ticker-only runs should not require Kite auth preflight")
+
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "build_kite_client", unexpected_build_kite_client)
+    monkeypatch.setattr(api_main, "run_single_company_analysis", fake_single_company_analysis)
+
+    client = TestClient(api_main.create_app())
+    response = client.post("/api/run", json={"ticker": "KPITTECH", "exchange": "NSE"})
+
+    assert response.status_code == 200
+    events = _parse_sse_stream(response.content)
+    assert events[-1]["event"] == "complete"
+
+
+def test_run_endpoint_sanitizes_preflight_failures(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+
+    class BrokenKiteClient:
+        async def __aenter__(self):
+            raise RuntimeError("traceback with /tmp/secret-path")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "build_kite_client", lambda s: BrokenKiteClient())
+
+    client = TestClient(api_main.create_app())
+    response = client.post("/api/run", json={"rebalance_only": False})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Failed to initialize the live Kite session."
+
+
 def test_run_endpoint_emits_error_event_on_full_run_failed(monkeypatch, tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
 
@@ -380,3 +447,60 @@ def test_run_endpoint_emits_error_event_on_full_run_failed(monkeypatch, tmp_path
     assert len(error_events) == 1
     assert error_events[0]["data"]["phase"] == "analyst"
     assert "analyst timed out" in error_events[0]["data"]["message"]
+
+
+def test_stream_run_sanitizes_rebalance_only_errors(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+
+    async def fake_sync_kite_data(*, settings):
+        del settings
+        raise RuntimeError("failed to reach https://internal.example/path")
+
+    monkeypatch.setattr(api_main, "sync_kite_data", fake_sync_kite_data)
+
+    async def consume_events() -> list[str]:
+        events: list[str] = []
+        async for event in api_main._stream_run(api_main.RunRequest(rebalance_only=True), settings):  # noqa: SLF001
+            events.append(event)
+        return events
+
+    events = asyncio.run(consume_events())
+    payloads = _parse_sse_stream("".join(events).encode("utf-8"))
+    error_event = [event for event in payloads if event["event"] == "error"][0]
+
+    assert error_event["data"]["message"] == "Rebalance-only run failed."
+    assert error_event["data"]["error_code"] == api_main.STREAM_ERROR_CODE
+    assert "internal.example" not in json.dumps(error_event["data"])
+
+
+def test_stream_run_cancels_background_task_when_closed(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    task_cancelled = asyncio.Event()
+    task_started = asyncio.Event()
+
+    async def fake_run_and_save(request, settings, event_callback):
+        del request, settings
+        event_callback({
+            "type": "phase",
+            "phase": "analyst",
+            "label": "Running",
+            "total": 1,
+        })
+        task_started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            task_cancelled.set()
+            raise
+
+    monkeypatch.setattr(api_main, "_run_and_save", fake_run_and_save)
+
+    async def exercise_stream() -> None:
+        stream = api_main._stream_run(api_main.RunRequest(), settings)  # noqa: SLF001
+        await stream.__anext__()
+        await stream.__anext__()
+        await task_started.wait()
+        await stream.aclose()
+        assert task_cancelled.is_set()
+
+    asyncio.run(exercise_stream())

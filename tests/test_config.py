@@ -57,11 +57,27 @@ def test_otel_headers_parse_from_json() -> None:
     assert settings.otel_exporter_otlp_headers == {"Authorization": "Basic abc", "x-test": "1"}
 
 
+def test_otel_headers_parse_from_standard_pairs() -> None:
+    settings = Settings(
+        ANTHROPIC_API_KEY="test-key",
+        OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer abc,x-scope-org=test-org",
+    )
+    assert settings.otel_exporter_otlp_headers == {
+        "Authorization": "Bearer abc",
+        "x-scope-org": "test-org",
+    }
+
+
 def test_invalid_otel_headers_raise() -> None:
     with pytest.raises(ValueError):
         Settings(
             ANTHROPIC_API_KEY="test-key",
             OTEL_EXPORTER_OTLP_HEADERS='["bad"]',
+        )
+    with pytest.raises(ValueError):
+        Settings(
+            ANTHROPIC_API_KEY="test-key",
+            OTEL_EXPORTER_OTLP_HEADERS="Authorization",
         )
 
 

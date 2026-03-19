@@ -118,16 +118,13 @@ class AnalystRiskMatrix(StrictModel):
     @field_validator("risk_level", mode="before")
     @classmethod
     def normalize_risk_level(cls, value: object) -> str:
-        normalized = str(value).strip()
+        normalized = str(value).strip().lower()
         mapping = {
-            "Medium-High": "High",
-            "medium-high": "High",
-            "MEDIUM-HIGH": "High",
-            "Medium-Low": "Low",
-            "medium-low": "Low",
-            "MEDIUM-LOW": "Low",
+            "medium-high": "high",
+            "medium-low": "low",
         }
-        return mapping.get(normalized, normalized)
+        normalized = mapping.get(normalized, normalized)
+        return {"low": "Low", "medium": "Medium", "high": "High"}.get(normalized, normalized)
 
 
 class AnalystActionPlan(StrictModel):

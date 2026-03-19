@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from config import Settings
 from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
-from application.research import DeepResearchOrchestrator
+from application.research import DeepResearchOrchestrator, ResearchExecutionError
 
 
 class FakeAnthropicClient:
@@ -104,3 +104,33 @@ def test_research_orchestrator_saves_equity_and_mf_reports(tmp_path: Path) -> No
     assert digest_path.exists()
     assert index_path.exists()
     assert len(holding_paths) == 2
+
+
+def test_research_loop_fails_fast_on_unexpected_stop_reason(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+
+    class UnexpectedStopClient:
+        @property
+        def messages(self):
+            async def create(**kwargs):
+                del kwargs
+                return SimpleNamespace(stop_reason="refusal", content=[])
+
+            return SimpleNamespace(create=create)
+
+    orchestrator = DeepResearchOrchestrator(settings=settings, client=UnexpectedStopClient())  # type: ignore[arg-type]
+
+    async def run_test() -> None:
+        try:
+            await orchestrator._run_tool_loop(  # noqa: SLF001
+                system="system",
+                user_prompt="prompt",
+                label="research_equity:HDFCBANK",
+                metadata={"phase": "research_equity"},
+            )
+        except ResearchExecutionError as exc:
+            assert "Unexpected stop_reason" in str(exc)
+        else:
+            raise AssertionError("Expected ResearchExecutionError")
+
+    asyncio.run(run_test())

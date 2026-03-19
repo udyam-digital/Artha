@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 from contextlib import nullcontext
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any
 
 from config import Settings
@@ -20,6 +21,19 @@ def _langfuse_auth_header(settings: Settings) -> str:
     token = f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode("utf-8")
     encoded = base64.b64encode(token).decode("ascii")
     return f"Basic {encoded}"
+
+
+def _redact_endpoint_for_logs(endpoint: str) -> str:
+    parts = urlsplit(endpoint)
+    if not parts.scheme or not parts.netloc:
+        return "<configured>"
+    hostname = parts.hostname
+    if hostname is None:
+        return "<configured>"
+    netloc = hostname
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def build_exporter_config(settings: Settings) -> tuple[str, dict[str, str], str] | None:
@@ -78,7 +92,11 @@ def initialize_telemetry(settings: Settings) -> bool:
     _TRACER = provider.get_tracer(settings.telemetry_service_name)
     _TELEMETRY_INITIALIZED = True
     _TELEMETRY_ENABLED = True
-    logger.info("Telemetry initialized via %s exporter to %s", backend, endpoint)
+    logger.info(
+        "Telemetry initialized via %s exporter to %s",
+        backend,
+        _redact_endpoint_for_logs(endpoint),
+    )
     return True
 
 

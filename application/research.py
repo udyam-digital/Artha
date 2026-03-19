@@ -287,6 +287,7 @@ class DeepResearchOrchestrator:
                 continue
             if stop_reason in {"end_turn", "max_tokens"}:
                 return self._extract_text(response)
+            raise ResearchExecutionError(f"Unexpected stop_reason in {label}: {stop_reason}")
         raise ResearchExecutionError("Research sub-agent exceeded MAX_ITERATIONS.")
 
     async def _build_digest_text(

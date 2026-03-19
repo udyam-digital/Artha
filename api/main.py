@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
@@ -31,6 +33,9 @@ from reliability import FullRunFailed
 
 
 APP_VERSION = "1.0"
+STREAM_ERROR_CODE = 1001
+REPORT_PARSE_ERROR_DETAIL = "Internal server error while parsing report."
+logger = logging.getLogger(__name__)
 
 
 class HealthResponse(BaseModel):
@@ -115,7 +120,7 @@ def create_app() -> FastAPI:
         except ReportNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ReportParseError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            _raise_report_parse_http_error("latest_report", exc)
 
     @app.get("/api/reports/{report_id}", response_model=PortfolioReport)
     async def report_detail(report_id: str) -> PortfolioReport:
@@ -125,13 +130,20 @@ def create_app() -> FastAPI:
         except ReportNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ReportParseError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            _raise_report_parse_http_error("report_detail", exc)
 
     @app.post("/api/run")
     async def run_artha(request: RunRequest) -> StreamingResponse:
         settings = get_settings()
-        async with build_kite_client(settings) as kite_client:
-            await _ensure_authenticated(kite_client, settings)
+        if not request.ticker:
+            try:
+                async with build_kite_client(settings) as kite_client:
+                    await _ensure_authenticated(kite_client, settings)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("Run preflight failed")
+                raise HTTPException(status_code=503, detail="Failed to initialize the live Kite session.") from exc
         return StreamingResponse(
             _stream_run(request, settings),
             media_type="text/event-stream",
@@ -149,7 +161,7 @@ def create_app() -> FastAPI:
         except ReportNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ReportParseError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            _raise_report_parse_http_error("price_history", exc)
         except HoldingNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         async with build_kite_client(settings) as kite_client:
@@ -208,6 +220,11 @@ def _load_latest_portfolio_snapshot_or_none(settings: Settings) -> PortfolioSnap
         return load_latest_portfolio_snapshot(settings)
     except FileNotFoundError:
         return None
+
+
+def _raise_report_parse_http_error(route_name: str, exc: ReportParseError) -> None:
+    logger.exception("Report parsing failed in %s", route_name)
+    raise HTTPException(status_code=500, detail=REPORT_PARSE_ERROR_DETAIL) from exc
 
 
 def _http_exception_to_live_error(exc: HTTPException) -> dict[str, str | None]:
@@ -270,8 +287,9 @@ async def _stream_run(request: RunRequest, settings: Settings) -> AsyncIterator[
             report, _ = build_rebalance_only_report(sync_result.portfolio_snapshot)
             report_path = save_report(report, settings.reports_dir)
             yield _sse("complete", {"report_id": report_path.stem, "report_path": str(report_path)})
-        except Exception as exc:
-            yield _sse("error", {"message": str(exc), "return_code": 1, "report_path": None})
+        except Exception:
+            logger.exception("Rebalance-only run failed")
+            yield _safe_error_sse(message="Rebalance-only run failed.", report_path=None, phase="rebalance")
         return
 
     queue: asyncio.Queue[RunEvent] = asyncio.Queue()
@@ -281,23 +299,30 @@ async def _stream_run(request: RunRequest, settings: Settings) -> AsyncIterator[
 
     run_task = asyncio.create_task(_run_and_save(request, settings, on_event))
 
-    while not run_task.done():
-        try:
-            event = await asyncio.wait_for(queue.get(), timeout=0.5)
-            yield _sse_from_run_event(event)
-        except asyncio.TimeoutError:
-            continue
-
-    while not queue.empty():
-        yield _sse_from_run_event(queue.get_nowait())
-
     try:
-        report_path = run_task.result()
-        yield _sse("complete", {"report_id": report_path.stem, "report_path": str(report_path)})
-    except FullRunFailed as exc:
-        yield _sse("error", {"message": exc.message, "phase": exc.phase, "return_code": 1, "report_path": None})
-    except Exception as exc:
-        yield _sse("error", {"message": str(exc), "return_code": 1, "report_path": None})
+        while not run_task.done():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                yield _sse_from_run_event(event)
+            except asyncio.TimeoutError:
+                continue
+
+        while not queue.empty():
+            yield _sse_from_run_event(queue.get_nowait())
+
+        try:
+            report_path = run_task.result()
+            yield _sse("complete", {"report_id": report_path.stem, "report_path": str(report_path)})
+        except FullRunFailed as exc:
+            yield _sse("error", {"message": exc.message, "phase": exc.phase, "return_code": 1, "report_path": None})
+        except Exception:
+            logger.exception("Full analysis stream failed")
+            yield _safe_error_sse(message="Full analysis failed.", report_path=None)
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
 
 
 async def _run_and_save(request: RunRequest, settings: Settings, event_callback) -> Path:
@@ -331,3 +356,15 @@ def _sse_from_run_event(event: RunEvent) -> str:
 
 def _sse(event: str, payload: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+
+def _safe_error_sse(*, message: str, report_path: str | None, phase: str | None = None) -> str:
+    payload: dict[str, object] = {
+        "message": message,
+        "error_code": STREAM_ERROR_CODE,
+        "return_code": 1,
+        "report_path": report_path,
+    }
+    if phase is not None:
+        payload["phase"] = phase
+    return _sse("error", payload)

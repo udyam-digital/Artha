@@ -91,3 +91,9 @@ def test_legacy_report_fields_are_rejected() -> None:
 def test_risk_level_normalizes_extended_values() -> None:
     assert AnalystRiskMatrix(risk_level="Medium-High").risk_level == "High"
     assert AnalystRiskMatrix(risk_level="Medium-Low").risk_level == "Low"
+
+
+def test_risk_level_normalizes_simple_case_variants() -> None:
+    assert AnalystRiskMatrix(risk_level=" high ").risk_level == "High"
+    assert AnalystRiskMatrix(risk_level="MEDIUM").risk_level == "Medium"
+    assert AnalystRiskMatrix(risk_level="low").risk_level == "Low"
