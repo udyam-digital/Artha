@@ -14,9 +14,11 @@ from company_analysis import get_company_artifact_and_verdict
 from config import Settings
 from kite_runtime import KiteSyncResult, build_kite_client, sync_kite_data
 from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
+from reliability import FullRunFailed, RetryFailure, run_with_retries
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
+from snapshot_store import company_analysis_path
 from tools import kite_get_price_history
-from usage_tracking import record_anthropic_usage
+from usage_tracking import record_anthropic_usage, record_run_error
 
 
 logger = logging.getLogger(__name__)
@@ -84,16 +86,20 @@ async def _price_contexts(
     holdings: list[Holding],
 ) -> dict[str, dict[str, float | str]]:
     async with build_kite_client(settings) as kite_client:
-        results = await asyncio.gather(
-            *[
-                kite_get_price_history(
+        async def fetch_for_holding(holding: Holding) -> dict[str, float | str]:
+            return await run_with_retries(
+                lambda: kite_get_price_history(
                     kite_client,
                     tradingsymbol=holding.tradingsymbol,
                     instrument_token=holding.instrument_token,
-                )
-                for holding in holdings
-            ]
-        )
+                ),
+                attempts=settings.transient_retry_attempts,
+                base_delay_seconds=settings.transient_retry_base_delay_seconds,
+                phase="price_history",
+                ticker=holding.tradingsymbol,
+            )
+
+        results = await asyncio.gather(*[fetch_for_holding(holding) for holding in holdings])
     return {holding.tradingsymbol: result for holding, result in zip(holdings, results, strict=True)}
 
 
@@ -165,7 +171,30 @@ async def run_full_analysis(
     7. Return PortfolioReport
     """
     started = time.perf_counter()
-    sync_result = await sync_kite_data(settings=settings)
+    try:
+        sync_result = await run_with_retries(
+            lambda: sync_kite_data(settings=settings),
+            attempts=settings.transient_retry_attempts,
+            base_delay_seconds=settings.transient_retry_base_delay_seconds,
+            phase="kite_sync",
+        )
+    except RetryFailure as exc:
+        error_path = record_run_error(
+            settings=settings,
+            phase=exc.phase,
+            error=exc.cause,
+            retries_used=exc.retries_used,
+            ticker=exc.ticker,
+            partial_artifact_path=exc.partial_artifact_path,
+        )
+        raise FullRunFailed(
+            phase=exc.phase,
+            message=str(exc.cause),
+            retries_used=exc.retries_used,
+            ticker=exc.ticker,
+            error_log_path=error_path,
+            partial_artifact_path=exc.partial_artifact_path,
+        ) from exc
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     skills_content = _load_analyst_prompt()
     equity_holdings = [
@@ -173,18 +202,43 @@ async def run_full_analysis(
         for holding in sync_result.portfolio_snapshot.holdings
         if holding.tradingsymbol not in PASSIVE_INSTRUMENTS
     ]
-    price_context_by_symbol = await _price_contexts(settings=settings, holdings=equity_holdings)
+    try:
+        price_context_by_symbol = await _price_contexts(settings=settings, holdings=equity_holdings)
+    except RetryFailure as exc:
+        error_path = record_run_error(
+            settings=settings,
+            phase=exc.phase,
+            error=exc.cause,
+            retries_used=exc.retries_used,
+            ticker=exc.ticker,
+            partial_artifact_path=exc.partial_artifact_path,
+        )
+        raise FullRunFailed(
+            phase=exc.phase,
+            message=str(exc.cause),
+            retries_used=exc.retries_used,
+            ticker=exc.ticker,
+            error_log_path=error_path,
+            partial_artifact_path=exc.partial_artifact_path,
+        ) from exc
 
     semaphore = asyncio.Semaphore(5)
 
     async def bounded_analyse(holding: Holding) -> StockVerdict:
         async with semaphore:
-            _, verdict, from_cache = await get_company_artifact_and_verdict(
-                holding=holding,
-                price_context=price_context_by_symbol.get(holding.tradingsymbol, {}),
-                skills_content=skills_content,
-                client=client,
-                settings=settings,
+            _, verdict, from_cache = await run_with_retries(
+                lambda: get_company_artifact_and_verdict(
+                    holding=holding,
+                    price_context=price_context_by_symbol.get(holding.tradingsymbol, {}),
+                    skills_content=skills_content,
+                    client=client,
+                    settings=settings,
+                ),
+                attempts=settings.transient_retry_attempts,
+                base_delay_seconds=settings.transient_retry_base_delay_seconds,
+                phase="analyst",
+                ticker=holding.tradingsymbol,
+                partial_artifact_path=company_analysis_path(holding.tradingsymbol, settings=settings),
             )
             if from_cache:
                 verdict.analysis_duration_seconds = 0.0
@@ -199,7 +253,25 @@ async def run_full_analysis(
     completed = 0
     total = len(task_to_symbol)
     for task in asyncio.as_completed(task_to_symbol):
-        verdict = await task
+        try:
+            verdict = await task
+        except RetryFailure as exc:
+            error_path = record_run_error(
+                settings=settings,
+                phase=exc.phase,
+                error=exc.cause,
+                retries_used=exc.retries_used,
+                ticker=exc.ticker,
+                partial_artifact_path=exc.partial_artifact_path,
+            )
+            raise FullRunFailed(
+                phase=exc.phase,
+                message=str(exc.cause),
+                retries_used=exc.retries_used,
+                ticker=exc.ticker,
+                error_log_path=error_path,
+                partial_artifact_path=exc.partial_artifact_path,
+            ) from exc
         completed += 1
         ordered_verdicts[verdict.tradingsymbol] = verdict
         if progress_callback is not None:
@@ -216,19 +288,60 @@ async def run_full_analysis(
     holding_by_symbol = {holding.tradingsymbol: holding for holding in equity_holdings}
     final_actions: dict[str, RebalancingAction] = {}
     errors = [verdict.error for verdict in verdicts if verdict.error]
+    if errors:
+        first_error = next((verdict for verdict in verdicts if verdict.error), None)
+        error_path = record_run_error(
+            settings=settings,
+            phase="analyst",
+            error=errors[0],
+            retries_used=0,
+            ticker=first_error.tradingsymbol if first_error else None,
+            partial_artifact_path=company_analysis_path(first_error.tradingsymbol, settings=settings) if first_error else None,
+        )
+        raise FullRunFailed(
+            phase="analyst",
+            message=errors[0],
+            retries_used=0,
+            ticker=first_error.tradingsymbol if first_error else None,
+            error_log_path=error_path,
+            partial_artifact_path=company_analysis_path(first_error.tradingsymbol, settings=settings) if first_error else None,
+        )
 
     for verdict in verdicts:
         _merge_action_into_verdict(verdict, action_by_symbol.get(verdict.tradingsymbol))
         final_actions[verdict.tradingsymbol] = _verdict_to_action(verdict, holding_by_symbol[verdict.tradingsymbol])
 
-    portfolio_summary = await _build_portfolio_summary(
-        client=client,
-        settings=settings,
-        verdicts=verdicts,
-        snapshot=sync_result.portfolio_snapshot,
-        mf_symbols=[holding.tradingsymbol for holding in sync_result.mf_snapshot.holdings],
-        errors=[error for error in errors if error],
-    )
+    try:
+        portfolio_summary = await run_with_retries(
+            lambda: _build_portfolio_summary(
+                client=client,
+                settings=settings,
+                verdicts=verdicts,
+                snapshot=sync_result.portfolio_snapshot,
+                mf_symbols=[holding.tradingsymbol for holding in sync_result.mf_snapshot.holdings],
+                errors=[error for error in errors if error],
+            ),
+            attempts=settings.transient_retry_attempts,
+            base_delay_seconds=settings.transient_retry_base_delay_seconds,
+            phase="portfolio_summary",
+        )
+    except RetryFailure as exc:
+        error_path = record_run_error(
+            settings=settings,
+            phase=exc.phase,
+            error=exc.cause,
+            retries_used=exc.retries_used,
+            ticker=exc.ticker,
+            partial_artifact_path=exc.partial_artifact_path,
+        )
+        raise FullRunFailed(
+            phase=exc.phase,
+            message=str(exc.cause),
+            retries_used=exc.retries_used,
+            ticker=exc.ticker,
+            error_log_path=error_path,
+            partial_artifact_path=exc.partial_artifact_path,
+        ) from exc
 
     total_buy_required = sum(
         verdict.rebalance_rupees for verdict in verdicts if verdict.rebalance_action == "BUY"

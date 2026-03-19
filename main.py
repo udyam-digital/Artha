@@ -14,6 +14,7 @@ from config import configure_logging, get_settings
 from kite_runtime import KiteSyncResult, sync_kite_data
 from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
 from orchestrator import run_full_analysis, run_single_company_analysis
+from reliability import FullRunFailed
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from research import DeepResearchOrchestrator
 from snapshot_store import load_latest_portfolio_snapshot
@@ -234,6 +235,22 @@ def print_research_result(digest: ResearchDigest, digest_path: Path, holding_pat
     print(f"Holding reports saved:    {len(holding_paths)}")
 
 
+def print_run_failure(exc: FullRunFailed, usage_summary: object) -> None:
+    print("ARTHA RUN FAILED")
+    print(f"Phase:                 {exc.phase}")
+    if exc.ticker:
+        print(f"Holding:               {exc.ticker}")
+    print(f"Retries Used:          {exc.retries_used}")
+    print(f"Error:                 {exc.message}")
+    if exc.partial_artifact_path:
+        print(f"Partial Artifact Path: {exc.partial_artifact_path}")
+    if exc.error_log_path:
+        print(f"Error Log Saved To:    {exc.error_log_path}")
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
+
+
 def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
     reports_dir.mkdir(parents=True, exist_ok=True)
     filename = report.generated_at.strftime("%Y%m%d_%H%M%S_artha_report.json")
@@ -282,7 +299,12 @@ async def handle_run(args: argparse.Namespace) -> int:
         )
 
     with usage_run(settings=settings, command="run") as usage_summary:
-        report = await run_full_analysis(settings, progress_callback=progress_callback)
+        try:
+            report = await run_full_analysis(settings, progress_callback=progress_callback)
+        except FullRunFailed as exc:
+            print()
+            print_run_failure(exc, usage_summary)
+            return 1
 
     output_path = save_report(report, settings.reports_dir)
     print()

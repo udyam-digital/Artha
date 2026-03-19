@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     company_analysis_max_age_days: int = Field(default=7, alias="COMPANY_ANALYSIS_MAX_AGE_DAYS")
     max_tokens: int = Field(default=8096, alias="MAX_TOKENS")
     max_iterations: int = Field(default=10, alias="MAX_ITERATIONS")
+    transient_retry_attempts: int = Field(default=3, alias="TRANSIENT_RETRY_ATTEMPTS")
+    transient_retry_base_delay_seconds: float = Field(default=1.0, alias="TRANSIENT_RETRY_BASE_DELAY_SECONDS")
     reports_dir: Path = Field(default=ROOT_DIR / "reports", alias="REPORTS_DIR")
     llm_usage_dir: Path = Field(default=ROOT_DIR / "reports" / "usage", alias="LLM_USAGE_DIR")
     telemetry_service_name: str = Field(default="artha", alias="TELEMETRY_SERVICE_NAME")

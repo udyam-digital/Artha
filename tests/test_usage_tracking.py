@@ -11,6 +11,7 @@ from usage_tracking import (
     format_usage_summary,
     get_current_usage_run,
     load_recent_run_summaries,
+    record_run_error,
     record_anthropic_usage,
     usage_run,
 )
@@ -187,3 +188,29 @@ def test_formatters_and_recent_summary_loading(tmp_path: Path) -> None:
 def test_load_recent_run_summaries_returns_empty_when_missing(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     assert load_recent_run_summaries(settings, limit=5) == []
+
+
+def test_record_run_error_marks_summary_failed_and_writes_error_log(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(usage_tracking, "emit_span", lambda name, attributes=None: None)
+
+    with usage_run(settings=settings, command="run") as summary:
+        error_path = record_run_error(
+            settings=settings,
+            phase="analyst",
+            error=RuntimeError("boom"),
+            retries_used=2,
+            ticker="KPITTECH",
+            partial_artifact_path=tmp_path / "companies" / "KPITTECH.json",
+        )
+
+    assert summary.status == "failed"
+    assert summary.failed_phase == "analyst"
+    assert summary.failed_ticker == "KPITTECH"
+    assert summary.error_log_path == error_path
+    error_payload = json.loads(error_path.read_text(encoding="utf-8").splitlines()[0])
+    assert error_payload["phase"] == "analyst"
+    assert error_payload["retries_used"] == 2
+    summary_payload = json.loads(summary.summary_path.read_text(encoding="utf-8").splitlines()[0])
+    assert summary_payload["status"] == "failed"
+    assert summary_payload["failed_phase"] == "analyst"

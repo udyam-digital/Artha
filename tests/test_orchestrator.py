@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import orchestrator
+from reliability import FullRunFailed
 from config import Settings
 from kite_runtime import KiteSyncResult
 from models import Holding, MFSnapshot, MFHolding, PortfolioSnapshot, StockVerdict
@@ -256,6 +257,48 @@ async def test_run_full_analysis_reuses_fresh_company_cache(tmp_path: Path, monk
     report = await orchestrator.run_full_analysis(settings)
     assert calls["count"] == 1
     assert report.verdicts[0].analysis_duration_seconds == 0.0
+
+
+async def test_run_full_analysis_fails_fast_and_logs_error(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    mf_snapshot = MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[])
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=mf_snapshot,
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    async def failing_get_company_artifact_and_verdict(**kwargs):
+        raise TimeoutError("anthropic timeout")
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", failing_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    with pytest.raises(FullRunFailed) as exc_info:
+        await orchestrator.run_full_analysis(settings)
+
+    exc = exc_info.value
+    assert exc.phase == "analyst"
+    assert exc.ticker == "KPITTECH"
+    assert exc.error_log_path is not None
+    assert exc.error_log_path.exists()
 
 
 async def test_run_single_company_analysis_returns_portfolio_report(tmp_path: Path, monkeypatch) -> None:

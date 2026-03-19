@@ -14,6 +14,8 @@ def make_settings(tmp_path: Path, **overrides: object) -> Settings:
         "REPORTS_DIR": str(tmp_path / "reports"),
         "LLM_USAGE_DIR": str(tmp_path / "reports" / "usage"),
         "KITE_DATA_DIR": str(tmp_path / "kite"),
+        "LANGFUSE_PUBLIC_KEY": "",
+        "LANGFUSE_SECRET_KEY": "",
     }
     base.update(overrides)
     return Settings(**base)

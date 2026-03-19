@@ -35,6 +35,8 @@ ANALYST_MODEL=claude-haiku-4-5
 ANALYST_MAX_TOKENS=2500
 SUMMARY_MAX_TOKENS=700
 COMPANY_ANALYSIS_MAX_AGE_DAYS=7
+TRANSIENT_RETRY_ATTEMPTS=3
+TRANSIENT_RETRY_BASE_DELAY_SECONDS=1.0
 LLM_USAGE_DIR=./reports/usage
 TELEMETRY_SERVICE_NAME=artha
 TELEMETRY_ENVIRONMENT=development
@@ -74,7 +76,7 @@ Supported flows:
 - `kite-login`: authenticate a live hosted Kite MCP session in the browser
 - `kite-sync`: fetch fresh equity and MF snapshots and persist them locally
 - `rebalance`: generate a math-only rebalancing report from the latest saved local equity snapshot, with no LLM call
-- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet
+- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
 - `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/companies/KPITTECH.json` as needed
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
@@ -86,6 +88,7 @@ LLM cost logging:
 - `run`, `run --ticker`, and `research` now append one JSON object per Anthropic call under `reports/usage/llm_usage_YYYYMMDD.jsonl`
 - each entry records run id, command, label, model, input/output tokens, cache tokens, web-search count, and estimated USD cost
 - every run also appends one summary row to `reports/usage/run_summaries.jsonl` with total cost, total calls, phase/model breakdowns, and the daily usage log path
+- failed full runs also append one row to `reports/usage/run_errors.jsonl` with failed phase, ticker when available, retry count used, and error details
 - the CLI prints a per-run estimated LLM cost summary and the JSONL path after completion
 
 Observability and tracing:

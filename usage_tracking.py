@@ -51,6 +51,11 @@ class UsageRunSummary:
     calls_by_phase: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     cost_by_model_usd: dict[str, Decimal] = field(default_factory=lambda: defaultdict(lambda: _ZERO))
     cost_by_phase_usd: dict[str, Decimal] = field(default_factory=lambda: defaultdict(lambda: _ZERO))
+    status: str = "success"
+    failed_phase: str | None = None
+    failed_ticker: str | None = None
+    error_message: str | None = None
+    error_log_path: Path | None = None
     _span_cm: Any | None = None
     _span: Any | None = None
 
@@ -127,6 +132,10 @@ def _summary_path(settings: Settings) -> Path:
     return settings.llm_usage_dir / "run_summaries.jsonl"
 
 
+def _error_path(settings: Settings) -> Path:
+    return settings.llm_usage_dir / "run_errors.jsonl"
+
+
 def _decimal_to_str(value: Decimal) -> str:
     return format(value.quantize(_USD), "f")
 
@@ -158,6 +167,11 @@ def _summary_record(summary: UsageRunSummary, *, completed_at: datetime) -> dict
         "calls_by_phase": dict(summary.calls_by_phase),
         "cost_by_model_usd": {key: _decimal_to_str(value) for key, value in summary.cost_by_model_usd.items()},
         "cost_by_phase_usd": {key: _decimal_to_str(value) for key, value in summary.cost_by_phase_usd.items()},
+        "status": summary.status,
+        "failed_phase": summary.failed_phase,
+        "failed_ticker": summary.failed_ticker,
+        "error_message": summary.error_message,
+        "error_log_path": str(summary.error_log_path) if summary.error_log_path else None,
     }
 
 
@@ -198,6 +212,52 @@ def usage_run(*, settings: Settings, command: str):
 
 def get_current_usage_run() -> UsageRunSummary | None:
     return _CURRENT_RUN.get()
+
+
+def record_run_error(
+    *,
+    settings: Settings,
+    phase: str,
+    error: Exception | str,
+    retries_used: int,
+    ticker: str | None = None,
+    partial_artifact_path: Path | None = None,
+) -> Path:
+    run = get_current_usage_run()
+    error_path = _error_path(settings)
+    error_message = str(error)
+    payload = {
+        "timestamp": _utc_now().isoformat(),
+        "run_id": run.run_id if run else None,
+        "command": run.command if run else None,
+        "phase": phase,
+        "ticker": ticker,
+        "error_type": type(error).__name__ if isinstance(error, Exception) else "RuntimeError",
+        "error_message": error_message,
+        "retries_used": retries_used,
+        "usage_path": str(run.usage_path) if run else str(_usage_path_for_today(settings)),
+        "partial_artifact_path": str(partial_artifact_path) if partial_artifact_path else None,
+    }
+    _append_jsonl(error_path, payload)
+    if run is not None:
+        run.status = "failed"
+        run.failed_phase = phase
+        run.failed_ticker = ticker
+        run.error_message = error_message
+        run.error_log_path = error_path
+    emit_span(
+        "artha.run_error",
+        {
+            "artha.run_id": run.run_id if run else None,
+            "artha.command": run.command if run else None,
+            "artha.failed_phase": phase,
+            "artha.failed_ticker": ticker,
+            "artha.retries_used": retries_used,
+            "error.type": payload["error_type"],
+            "error.message": error_message,
+        },
+    )
+    return error_path
 
 
 def record_anthropic_usage(
@@ -298,6 +358,7 @@ def format_usage_summary(summary: UsageRunSummary) -> str:
 def format_run_summary(summary_record: dict[str, Any]) -> str:
     return (
         f"{summary_record['started_at']} | {summary_record['command']} | "
+        f"{summary_record.get('status', 'success')} | "
         f"${summary_record['total_estimated_cost_usd']} | "
         f"{summary_record['total_entries']} call(s) | "
         f"{summary_record['total_web_search_requests']} web search(es)"
