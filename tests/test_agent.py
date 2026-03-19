@@ -1,7 +1,9 @@
 from pathlib import Path
 
-from agent import ArthaAgent
+from application.agent import ArthaAgent
+from application.research import DeepResearchOrchestrator
 from config import Settings
+from models import PortfolioSnapshot
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -10,27 +12,30 @@ def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         ANTHROPIC_API_KEY="test-key",
         MODEL="claude-sonnet-4-6",
+        ANALYST_MODEL="claude-haiku-4-5",
+        COMPANY_ANALYSIS_MAX_AGE_DAYS=7,
         REPORTS_DIR=str(reports_dir),
         KITE_MCP_URL="https://mcp.kite.trade/mcp",
     )
 
 
-def test_tool_definitions_include_native_web_search(tmp_path: Path) -> None:
+def test_tool_definitions_include_tavily_search(tmp_path: Path) -> None:
     agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
     tool_names = [tool["name"] for tool in agent.tools]
     assert tool_names == [
         "kite_get_portfolio",
         "kite_get_price_history",
-        "web_search",
+        "tavily_search",
     ]
-    assert next(tool for tool in agent.tools if tool["name"] == "web_search")["type"] == "web_search_20250305"
+    assert "type" not in next(tool for tool in agent.tools if tool["name"] == "tavily_search")
 
 
 def test_full_run_prompt_requires_deep_research(tmp_path: Path) -> None:
     agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
     prompt = agent._build_user_prompt()
     assert "For every non-passive equity holding" in prompt
-    assert "web_search extensively" in prompt
+    assert "use tavily_search up to 3 times per holding" in prompt.lower()
+    assert "rebalancing actions. You must return exactly one JSON object" in prompt
 
 
 def test_parse_final_output_falls_back_without_tags(tmp_path: Path) -> None:
@@ -38,3 +43,36 @@ def test_parse_final_output_falls_back_without_tags(tmp_path: Path) -> None:
     report = agent._parse_final_output("not valid output", snapshot=None, errors=[])
     assert report.portfolio_summary == "not valid output"
     assert report.errors
+
+
+def test_fallback_report_uses_verdicts_field(tmp_path: Path) -> None:
+    agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=1000.0,
+        available_cash=0.0,
+        holdings=[],
+    )
+    report = agent._fallback_report("summary", snapshot=snapshot, errors=[])
+    assert report.verdicts == []
+
+
+def test_parse_final_output_uses_first_matching_artha_report(tmp_path: Path) -> None:
+    agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
+    raw_text = """
+noise
+<artha_report>{"generated_at":"2026-03-18T10:00:00Z","portfolio_snapshot":{"fetched_at":"2026-03-18T10:00:00Z","total_value":1000.0,"available_cash":0.0,"holdings":[]},"verdicts":[],"portfolio_summary":"first","total_buy_required":0.0,"total_sell_required":0.0,"errors":[]}</artha_report>
+<artha_report>{"generated_at":"2026-03-18T10:00:01Z","portfolio_snapshot":{"fetched_at":"2026-03-18T10:00:01Z","total_value":2000.0,"available_cash":0.0,"holdings":[]},"verdicts":[],"portfolio_summary":"second","total_buy_required":0.0,"total_sell_required":0.0,"errors":[]}</artha_report>
+"""
+    report = agent._parse_final_output(raw_text, snapshot=None, errors=[])
+    assert report.portfolio_summary == "first"
+
+
+def test_research_extract_tagged_json_uses_first_matching_block(tmp_path: Path) -> None:
+    orchestrator = DeepResearchOrchestrator(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
+    raw_text = """
+<equity_research>{"identifier":"FIRST","title":"First"}</equity_research>
+<equity_research>{"identifier":"SECOND","title":"Second"}</equity_research>
+"""
+    payload = orchestrator._extract_tagged_json(raw_text, "equity_research", "FIRST")
+    assert payload["identifier"] == "FIRST"

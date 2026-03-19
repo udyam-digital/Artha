@@ -10,9 +10,11 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from config import Settings, get_settings
+from kite.client import KiteMCPClient, load_kite_server_definition
+from kite.tools import execute_tool_call, get_tool_definitions
 from models import PortfolioReport, PortfolioSnapshot
+from observability.usage import log_estimated_input_tokens, record_anthropic_usage
 from rebalance import calculate_rebalancing_actions
-from tools import KiteMCPClient, execute_tool_call, get_tool_definitions, load_kite_server_definition
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +34,35 @@ class ArthaAgent:
     def _build_user_prompt(
         self,
         ticker: str | None = None,
+        prefetched_snapshot: PortfolioSnapshot | None = None,
     ) -> str:
+        snapshot_context = ""
+        if prefetched_snapshot is not None:
+            snapshot_context = (
+                "Use this freshly synced portfolio snapshot as ground truth for holdings, weights, and cash. "
+                f"Snapshot JSON:\n{prefetched_snapshot.model_dump_json(indent=2)}\n\n"
+            )
+
         if ticker:
-            return (
+            return snapshot_context + (
                 f"Run a single-stock deep dive for {ticker.upper()} from the live Kite portfolio. "
                 "Use kite_get_portfolio to find the holding and kite_get_price_history for price context. "
-                "Use web_search extensively to research the company with recent, source-cited coverage across "
+                f"Use tavily_search up to {self.settings.analyst_max_searches} times to research the company with "
+                "recent, source-cited coverage across "
                 "Screener, investor presentations, concalls, results coverage, and relevant news. "
                 "Do not create meaningful rebalancing actions; return an empty or HOLD-only rebalancing_actions list. "
                 "Return the final answer as JSON wrapped in <artha_report>...</artha_report> tags."
             )
 
-        return (
+        return snapshot_context + (
             "Analyze the live Indian equity portfolio from Kite. Start by calling kite_get_portfolio. "
-            "For every non-passive equity holding, perform broad web_search-based research before concluding. "
-            "Use kite_get_price_history for price context where helpful, and use web_search extensively for holdings "
+            "For every non-passive equity holding, perform broad tavily_search-based research before concluding. "
+            f"Use kite_get_price_history for price context where helpful, and use tavily_search up to "
+            f"{self.settings.analyst_max_searches} times per holding for holdings "
             "research with recent, source-cited coverage across Screener, investor presentations, concalls, results, "
             "and relevant sector or company news. "
             "Exclude LIQUIDBEES, NIFTYBEES, GOLDCASE, and SILVERCASE from equity rebalancing actions, but keep them "
-            "in the portfolio snapshot and total value. Never include MF holdings in equity rebalancing actions."
+            "in the portfolio snapshot and total value. Never include MF holdings in equity rebalancing actions. "
             "You must return exactly one JSON object wrapped in <artha_report>...</artha_report> tags that validates "
             "against the PortfolioReport schema. If data is partial, still return valid JSON and record issues in errors."
         )
@@ -82,8 +94,7 @@ class ArthaAgent:
         return PortfolioReport(
             generated_at=datetime.now(timezone.utc),
             portfolio_snapshot=snapshot,
-            analyses=[],
-            rebalancing_actions=actions,
+            verdicts=[],
             portfolio_summary=raw_text or "Artha could not parse a valid final JSON response.",
             total_buy_required=sum(a.rupee_amount for a in actions if a.action == "BUY"),
             total_sell_required=sum(a.rupee_amount for a in actions if a.action == "SELL"),
@@ -96,12 +107,12 @@ class ArthaAgent:
         snapshot: PortfolioSnapshot | None,
         errors: list[str],
     ) -> PortfolioReport:
-        match = re.search(r"<artha_report>\s*(\{.*\})\s*</artha_report>", raw_text, re.DOTALL)
-        if not match:
+        block_match = re.search(r"<artha_report>(.*?)</artha_report>", raw_text, re.DOTALL)
+        if not block_match:
             errors.append("Final response did not contain <artha_report> JSON tags.")
             return self._fallback_report(raw_text, snapshot, errors)
 
-        payload = match.group(1)
+        payload = block_match.group(1).strip()
         try:
             return PortfolioReport.model_validate_json(payload)
         except Exception:
@@ -112,12 +123,19 @@ class ArthaAgent:
     async def run(
         self,
         ticker: str | None = None,
+        prefetched_snapshot: PortfolioSnapshot | None = None,
     ) -> PortfolioReport:
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": self._build_user_prompt(ticker=ticker)}
+            {
+                "role": "user",
+                "content": self._build_user_prompt(
+                    ticker=ticker,
+                    prefetched_snapshot=prefetched_snapshot,
+                ),
+            }
         ]
         errors: list[str] = []
-        latest_snapshot: PortfolioSnapshot | None = None
+        latest_snapshot: PortfolioSnapshot | None = prefetched_snapshot
 
         async with KiteMCPClient(
             load_kite_server_definition(self.settings),
@@ -125,12 +143,24 @@ class ArthaAgent:
         ) as kite_client:
             for iteration in range(1, self.settings.max_iterations + 1):
                 logger.info("Agent iteration %s/%s", iteration, self.settings.max_iterations)
+                log_estimated_input_tokens(
+                    label="[artha_agent]",
+                    messages=messages,
+                    system=self.system_prompt,
+                )
                 response = await self.client.messages.create(
                     model=self.settings.model,
                     max_tokens=self.settings.max_tokens,
                     system=self.system_prompt,
                     messages=messages,
                     tools=self.tools,
+                )
+                record_anthropic_usage(
+                    settings=self.settings,
+                    label="artha_agent",
+                    model=self.settings.model,
+                    response=response,
+                    metadata={"phase": "agent", "iteration": iteration, "ticker": ticker},
                 )
 
                 stop_reason = getattr(response, "stop_reason", None)
@@ -144,8 +174,8 @@ class ArthaAgent:
                     for block in response.content:
                         if getattr(block, "type", None) != "tool_use":
                             continue
-                        if block.name == "web_search":
-                            logger.info("Artha researching via web_search")
+                        if block.name == "tavily_search":
+                            logger.info("Artha researching via tavily_search")
                         elif block.name == "kite_get_price_history":
                             logger.info(
                                 "Artha researching price history for %s",

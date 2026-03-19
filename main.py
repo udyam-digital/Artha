@@ -4,24 +4,23 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent import ArthaAgent
+from anthropic import AsyncAnthropic
+
+from application.orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
+from application.research import DeepResearchOrchestrator
 from config import configure_logging, get_settings
-from models import PortfolioReport, PortfolioSnapshot
-from rebalance import calculate_rebalancing_actions
-from tools import (
-    KiteMCPClient,
-    ToolExecutionError,
-    kite_get_portfolio,
-    kite_get_profile,
-    kite_login,
-    load_kite_server_definition,
-    profile_requires_login,
-    save_portfolio_snapshot,
-    wait_for_kite_login,
-)
+from kite.runtime import KiteSyncResult, load_same_day_kite_sync_result, sync_kite_data
+from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
+from observability.telemetry import initialize_telemetry, shutdown_telemetry
+from observability.usage import format_run_summary, format_usage_summary, load_recent_run_summaries, usage_run
+from persistence.store import load_latest_portfolio_snapshot, save_report
+from reliability import FullRunFailed
+from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
+from kite.tools import ToolExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -30,76 +29,140 @@ def format_rupees(amount: float) -> str:
     return f"\u20b9{amount:,.0f}"
 
 
-def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> PortfolioReport:
-    actions = calculate_rebalancing_actions(
-        holdings=snapshot.holdings,
-        total_value=snapshot.total_value,
-        available_cash=snapshot.available_cash,
-    )
-    summary = (
-        "This is a rebalance-only run using live holdings and current market values. "
-        "Fundamental analysis was skipped, so actions are based only on drift versus target weights. "
-        "Review tax context and thesis quality before acting on any sell recommendation."
-    )
-    return PortfolioReport(
-        generated_at=datetime.now(timezone.utc),
-        portfolio_snapshot=snapshot,
-        analyses=[],
-        rebalancing_actions=actions,
-        portfolio_summary=summary,
-        total_buy_required=sum(action.rupee_amount for action in actions if action.action == "BUY"),
-        total_sell_required=sum(action.rupee_amount for action in actions if action.action == "SELL"),
-        errors=[],
-    )
+def _verdict_to_action_text(verdict: StockVerdict) -> str:
+    if verdict.rebalance_action == "HOLD":
+        return "HOLD —"
+    return f"{verdict.rebalance_action} {format_rupees(verdict.rebalance_rupees)}"
+
+
+def _thesis_text(verdict: StockVerdict) -> str:
+    return "✓ Intact" if verdict.thesis_intact else "✗ Weak"
+
+
+def _render_verdict_rows(verdicts: list[StockVerdict]) -> list[str]:
+    header = "┌─────────────┬─────────────┬──────────┬────────┬──────────────────┐"
+    title = "│ Stock       │ Verdict     │ Thesis   │ P&L%   │ Action           │"
+    divider = "├─────────────┼─────────────┼──────────┼────────┼──────────────────┤"
+    footer = "└─────────────┴─────────────┴──────────┴────────┴──────────────────┘"
+    rows = [header, title, divider]
+    for verdict in verdicts:
+        pnl_text = f"{verdict.pnl_pct:+.0f}%"
+        rows.append(
+            "│ "
+            f"{verdict.tradingsymbol:<11} │ "
+            f"{verdict.verdict.value:<11} │ "
+            f"{_thesis_text(verdict):<8} │ "
+            f"{pnl_text:<6} │ "
+            f"{_verdict_to_action_text(verdict):<16} │"
+        )
+    rows.append(footer)
+    return rows
 
 
 def print_report(report: PortfolioReport) -> None:
     timestamp = report.generated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    holdings_count = len(report.portfolio_snapshot.holdings)
-    print("╔══════════════════════════════╗")
-    print("║  ARTHA PORTFOLIO REPORT      ║")
-    print(f"║  {timestamp:<26}║")
-    print("╚══════════════════════════════╝")
+    equity_count = len(report.verdicts)
+    etf_count = len(
+        [holding for holding in report.portfolio_snapshot.holdings if holding.tradingsymbol in PASSIVE_INSTRUMENTS]
+    )
+    print("╔══════════════════════════════════════╗")
+    print("║  ARTHA PORTFOLIO REPORT              ║")
+    print(f"║  {timestamp:<36}║")
+    print("╚══════════════════════════════════════╝")
     print()
     print("PORTFOLIO SNAPSHOT")
     print(f"Total Value:    {format_rupees(report.portfolio_snapshot.total_value)}")
     print(f"Available Cash: {format_rupees(report.portfolio_snapshot.available_cash)}")
-    print(f"Holdings:       {holdings_count} stocks")
+    print(f"Equity stocks:  {equity_count} | ETFs: {etf_count} (excluded from analysis)")
     print()
-    print("REBALANCING ACTIONS")
-    if report.rebalancing_actions:
-        for action in report.rebalancing_actions:
-            if action.action == "SELL":
-                prefix = "🔴 SELL"
-                amount = format_rupees(action.rupee_amount)
-            elif action.action == "BUY":
-                prefix = "🟢 BUY "
-                amount = format_rupees(action.rupee_amount)
-            else:
-                prefix = "⚪ HOLD"
-                amount = "—"
-            print(
-                f"{prefix:<8} {action.tradingsymbol:<12} {amount:<10} "
-                f"({action.current_weight_pct:.1f}% → {action.target_weight_pct:.1f}%)  {action.urgency}"
-            )
+    print("ANALYST VERDICTS")
+    if report.verdicts:
+        for line in _render_verdict_rows(report.verdicts):
+            print(line)
     else:
-        print("No actionable positions.")
+        print("No analyst verdicts in this run.")
     print()
-    print("ANALYSIS HIGHLIGHTS")
-    if report.analyses:
-        for analysis in report.analyses:
-            flag_text = ", ".join(analysis.red_flags) if analysis.red_flags else "None identified"
-            print(f"{analysis.tradingsymbol}: {analysis.bull_case} | Risk: {flag_text}")
-    else:
-        print("No fundamental analysis in this run.")
+    print("REBALANCING SUMMARY")
+    print(f"Total to sell:  {format_rupees(report.total_sell_required)}")
+    print(f"Total to buy:   {format_rupees(report.total_buy_required)}")
     print()
     print("PORTFOLIO SUMMARY")
     print(report.portfolio_summary)
+    actionable = [verdict for verdict in report.verdicts if verdict.rebalance_action != "HOLD"]
+    if actionable:
+        print()
+        print("WHAT AND WHY")
+        for verdict in actionable:
+            print(
+                f"- {verdict.tradingsymbol}: {verdict.rebalance_action} "
+                f"{format_rupees(verdict.rebalance_rupees)} because {verdict.rebalance_reasoning}"
+            )
     if report.errors:
         print()
         print("ERRORS")
         for error in report.errors:
             print(f"- {error}")
+
+
+def print_rebalance_report(report: PortfolioReport, actions: list[RebalancingAction]) -> None:
+    timestamp = report.generated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    print("╔══════════════════════════════════════╗")
+    print("║  ARTHA REBALANCE REPORT              ║")
+    print(f"║  {timestamp:<36}║")
+    print("╚══════════════════════════════════════╝")
+    print()
+    print("PORTFOLIO SNAPSHOT")
+    print(f"Total Value:    {format_rupees(report.portfolio_snapshot.total_value)}")
+    print(f"Available Cash: {format_rupees(report.portfolio_snapshot.available_cash)}")
+    print()
+    print("REBALANCING ACTIONS")
+    if not actions:
+        print("No actionable positions.")
+    for action in actions:
+        amount = format_rupees(action.rupee_amount) if action.action != "HOLD" else "—"
+        print(
+            f"{action.action:<4} {action.tradingsymbol:<12} {amount:<10} "
+            f"({action.current_weight_pct:.1f}% → {action.target_weight_pct:.1f}%)  {action.urgency}"
+        )
+    print()
+    print("PORTFOLIO SUMMARY")
+    print(report.portfolio_summary)
+
+
+def print_single_verdict(verdict: StockVerdict) -> None:
+    print("STOCK VERDICT")
+    print(f"Stock:                {verdict.tradingsymbol} ({verdict.company_name})")
+    print(f"Verdict:              {verdict.verdict.value}")
+    print(f"Confidence:           {verdict.confidence}")
+    print(f"Thesis Intact:        {'Yes' if verdict.thesis_intact else 'No'}")
+    print(f"Current Price:        {format_rupees(verdict.current_price)}")
+    print(f"Buy Price:            {format_rupees(verdict.buy_price)}")
+    print(f"P&L %:                {verdict.pnl_pct:+.1f}%")
+    print(f"Action:               {_verdict_to_action_text(verdict)}")
+    print(f"Bull Case:            {verdict.bull_case}")
+    print(f"Bear Case:            {verdict.bear_case}")
+    print(f"What To Watch:        {verdict.what_to_watch}")
+    print(f"Rebalance Reasoning:  {verdict.rebalance_reasoning}")
+    print(f"Sources:              {', '.join(verdict.data_sources) if verdict.data_sources else 'None'}")
+    print(f"Duration:             {verdict.analysis_duration_seconds:.1f}s")
+    if verdict.error:
+        print(f"Error:                {verdict.error}")
+
+
+def build_standalone_holding(symbol: str, exchange: str = "NSE") -> Holding:
+    return Holding(
+        tradingsymbol=symbol.upper(),
+        exchange=exchange.upper(),
+        quantity=0,
+        average_price=0.0,
+        last_price=0.0,
+        current_value=0.0,
+        current_weight_pct=0.0,
+        target_weight_pct=0.0,
+        pnl=0.0,
+        pnl_pct=0.0,
+        instrument_token=0,
+    )
 
 
 def print_holdings(snapshot: PortfolioSnapshot) -> None:
@@ -124,27 +187,45 @@ def print_kite_login_result(auth_artifact: Path, auth_url: str | None, portfolio
     print(f"Portfolio snapshot saved to: {portfolio_artifact}")
 
 
-def print_kite_sync_result(profile: dict[str, object], snapshot: PortfolioSnapshot, artifact_path: Path) -> None:
+def print_kite_sync_result(result: KiteSyncResult) -> None:
     print("KITE MCP SYNC")
-    if profile:
-        print(f"Profile fetched: {profile.get('user_name') or profile.get('user_id') or 'available'}")
-    print_holdings(snapshot)
-    print(f"Portfolio snapshot saved to: {artifact_path}")
+    if result.profile:
+        print(f"Profile fetched: {result.profile.get('user_name') or result.profile.get('user_id') or 'available'}")
+    if result.auth_url:
+        print(f"Login URL used: {result.auth_url}")
+    print_holdings(result.portfolio_snapshot)
+    print(f"Portfolio snapshot saved to: {result.portfolio_artifact}")
+    print(f"MF snapshot saved to: {result.mf_artifact}")
 
 
-def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    filename = report.generated_at.strftime("%Y%m%d_%H%M%S_artha_report.json")
-    output_path = reports_dir / filename
-    output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    return output_path
+def print_research_result(digest: ResearchDigest, digest_path: Path, holding_paths: list[Path], index_path: Path) -> None:
+    print("ARTHA DEEP RESEARCH")
+    print(f"Equity reports: {len(digest.equity_reports)}")
+    print(f"MF reports:     {len(digest.mf_reports)}")
+    if digest.errors:
+        print(f"Errors:         {len(digest.errors)}")
+    print()
+    print(digest.portfolio_digest)
+    print()
+    print(f"Combined digest saved to: {digest_path}")
+    print(f"Research index saved to:  {index_path}")
+    print(f"Holding reports saved:    {len(holding_paths)}")
 
 
-def build_kite_client(settings) -> KiteMCPClient:
-    return KiteMCPClient(
-        load_kite_server_definition(settings),
-        timeout_seconds=settings.kite_mcp_timeout_seconds,
-    )
+def print_run_failure(exc: FullRunFailed, usage_summary: object) -> None:
+    print("ARTHA RUN FAILED")
+    print(f"Phase:                 {exc.phase}")
+    if exc.ticker:
+        print(f"Holding:               {exc.ticker}")
+    print(f"Retries Used:          {exc.retries_used}")
+    print(f"Error:                 {exc.message}")
+    if exc.partial_artifact_path:
+        print(f"Partial Artifact Path: {exc.partial_artifact_path}")
+    if exc.error_log_path:
+        print(f"Error Log Saved To:    {exc.error_log_path}")
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
 
 
 async def handle_run(args: argparse.Namespace) -> int:
@@ -153,15 +234,79 @@ async def handle_run(args: argparse.Namespace) -> int:
         raise ValueError("--ticker cannot be combined with --rebalance-only")
 
     if args.rebalance_only:
-        async with build_kite_client(settings) as kite_client:
-            snapshot = await kite_get_portfolio(kite_client, settings=settings)
-        report = build_rebalance_only_report(snapshot)
-    else:
-        agent = ArthaAgent(settings=settings)
-        report = await agent.run(ticker=args.ticker)
+        sync_result = await sync_kite_data(settings=settings)
+        snapshot = sync_result.portfolio_snapshot
+        report, actions = build_rebalance_only_report(snapshot)
+        output_path = save_report(report, settings.reports_dir)
+        print_rebalance_report(report, actions)
+        print()
+        print(f"JSON report saved to: {output_path}")
+        return 0
+
+    if args.ticker:
+        with usage_run(settings=settings, command=f"run --ticker {args.ticker.upper()}") as usage_summary:
+            report = await run_single_company_analysis(
+                settings=settings,
+                ticker=args.ticker,
+                exchange=getattr(args, "exchange", "NSE"),
+            )
+        output_path = save_report(report, settings.reports_dir)
+        print_report(report)
+        print()
+        print(format_usage_summary(usage_summary))
+        print(f"LLM usage log saved to: {usage_summary.usage_path}")
+        print()
+        print(f"JSON report saved to: {output_path}")
+        return 0
+
+    started = time.perf_counter()
+
+    def event_callback(event: RunEvent) -> None:
+        if event["type"] == "phase":
+            logger.info("[%s] %s", event["phase"].upper(), event["label"])
+        elif event["type"] == "analyst_complete":
+            print(
+                f"[{event['completed']}/{event['total']}] {event['ticker']:<10} "
+                f"✓ {event['verdict']:<9} ({event['duration_seconds']:.1f}s)"
+            )
+
+    with usage_run(settings=settings, command="run") as usage_summary:
+        try:
+            cached_sync_result = load_same_day_kite_sync_result(settings)
+            if cached_sync_result is not None:
+                print("Using today's saved Kite snapshots. Skipping fresh Kite login and sync.")
+            report = await run_full_analysis(
+                settings,
+                event_callback=event_callback,
+                sync_result=cached_sync_result,
+            )
+        except FullRunFailed as exc:
+            print()
+            print_run_failure(exc, usage_summary)
+            return 1
 
     output_path = save_report(report, settings.reports_dir)
+    print()
     print_report(report)
+    print()
+    print(
+        f"Completed in {time.perf_counter() - started:.1f}s | "
+        f"{len(report.verdicts)} analysts | {len(report.errors)} errors"
+    )
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
+    print()
+    print(f"JSON report saved to: {output_path}")
+    return 0
+
+
+async def handle_rebalance() -> int:
+    settings = get_settings()
+    snapshot = load_latest_portfolio_snapshot(settings)
+    report, actions = build_rebalance_only_report(snapshot)
+    output_path = save_report(report, settings.reports_dir)
+    print_rebalance_report(report, actions)
     print()
     print(f"JSON report saved to: {output_path}")
     return 0
@@ -169,37 +314,51 @@ async def handle_run(args: argparse.Namespace) -> int:
 
 async def handle_holdings() -> int:
     settings = get_settings()
-    async with build_kite_client(settings) as kite_client:
-        snapshot = await kite_get_portfolio(kite_client, settings=settings)
+    sync_result = await sync_kite_data(settings=settings)
+    snapshot = sync_result.portfolio_snapshot
     print_holdings(snapshot)
     return 0
 
 
 async def handle_kite_sync() -> int:
-    settings = get_settings()
-    async with build_kite_client(settings) as kite_client:
-        profile = await kite_get_profile(kite_client)
-        snapshot = await kite_get_portfolio(kite_client, settings=settings)
-    artifact_path = save_portfolio_snapshot(snapshot, settings=settings)
-    print_kite_sync_result(profile, snapshot, artifact_path)
+    result = await sync_kite_data(settings=get_settings())
+    print_kite_sync_result(result)
     return 0
 
 
 async def handle_kite_login() -> int:
+    result = await sync_kite_data(settings=get_settings())
+    print_kite_login_result(result.auth_artifact or result.portfolio_artifact, result.auth_url, result.portfolio_artifact)
+    print(f"MF snapshot saved to: {result.mf_artifact}")
+    return 0
+
+
+async def handle_research() -> int:
     settings = get_settings()
-    async with build_kite_client(settings) as kite_client:
-        payload, auth_url, auth_artifact = await kite_login(kite_client, settings=settings)
-        initial_profile = await kite_get_profile(kite_client)
-        if profile_requires_login(initial_profile):
-            if auth_url:
-                print(f"Complete Kite login in your browser: {auth_url}")
-                print("Waiting for login confirmation...")
-            profile = await wait_for_kite_login(kite_client, settings=settings)
-        else:
-            profile = initial_profile
-        snapshot = await kite_get_portfolio(kite_client, settings=settings)
-    portfolio_artifact = save_portfolio_snapshot(snapshot, settings=settings)
-    print_kite_login_result(auth_artifact, auth_url, portfolio_artifact)
+    orchestrator = DeepResearchOrchestrator(settings=settings)
+    with usage_run(settings=settings, command="research") as usage_summary:
+        digest, digest_path, holding_paths, index_path = await orchestrator.research_latest_snapshots()
+    print_research_result(digest, digest_path, holding_paths, index_path)
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
+    return 0
+
+
+async def handle_usage_report(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    summaries = load_recent_run_summaries(settings, limit=args.last)
+    if not summaries:
+        print("No historical run summaries found.")
+        print(f"Expected summary log path: {settings.llm_usage_dir / 'run_summaries.jsonl'}")
+        return 0
+
+    print(f"Showing {len(summaries)} most recent run(s):")
+    print()
+    for summary in summaries:
+        print(format_run_summary(summary))
+    print()
+    print(f"Run summary log: {settings.llm_usage_dir / 'run_summaries.jsonl'}")
     return 0
 
 
@@ -209,15 +368,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Full portfolio analysis and rebalancing report")
     run_parser.add_argument("--ticker", help="Run a single-stock deep dive only")
+    run_parser.add_argument("--exchange", default="NSE", help="Exchange for standalone analyst mode, default NSE")
     run_parser.add_argument(
         "--rebalance-only",
         action="store_true",
-        help="Skip fundamental analysis and compute only rebalancing actions",
+        help="Skip fundamental analysis and compute only rebalancing actions after a fresh sync",
     )
 
     subparsers.add_parser("holdings", help="Print the current holdings table without an LLM call")
     subparsers.add_parser("kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot")
-    subparsers.add_parser("kite-sync", help="Fetch profile and holdings from Kite MCP and save a local snapshot")
+    subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
+    subparsers.add_parser("rebalance", help="Generate a rebalancing report from the latest saved local equity snapshot")
+    subparsers.add_parser("research", help="Run deep web research on the latest saved equity and MF snapshots")
+    usage_parser = subparsers.add_parser("usage-report", help="Print recent historical LLM usage summaries")
+    usage_parser.add_argument("--last", type=int, default=10, help="Number of recent runs to show")
     return parser
 
 
@@ -226,6 +390,7 @@ async def async_main() -> int:
     args = parser.parse_args()
     settings = get_settings()
     configure_logging(settings.log_level)
+    initialize_telemetry(settings)
 
     try:
         if args.command == "run":
@@ -236,6 +401,12 @@ async def async_main() -> int:
             return await handle_kite_login()
         if args.command == "kite-sync":
             return await handle_kite_sync()
+        if args.command == "rebalance":
+            return await handle_rebalance()
+        if args.command == "research":
+            return await handle_research()
+        if args.command == "usage-report":
+            return await handle_usage_report(args)
         parser.error("Unknown command")
         return 2
     except ToolExecutionError as exc:
@@ -244,6 +415,8 @@ async def async_main() -> int:
     except Exception:
         logger.exception("Artha failed")
         return 1
+    finally:
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":

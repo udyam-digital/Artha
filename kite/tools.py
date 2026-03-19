@@ -3,34 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
-from asyncio import wait_for
-from contextlib import AsyncExitStack
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
-from models import Holding, PortfolioSnapshot
+from kite.client import KiteMCPClient, ToolExecutionError
+from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
 from rebalance import PASSIVE_INSTRUMENTS
+from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+
 
 logger = logging.getLogger(__name__)
-
-
-class ToolExecutionError(RuntimeError):
-    pass
-
-
-@dataclass
-class MCPServerDefinition:
-    transport: str
-    url: str | None
-    command: str
-    args: list[str]
-    env: dict[str, str]
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:
@@ -58,113 +44,6 @@ def _holding_market_value(item: dict[str, Any]) -> float:
     quantity = _coerce_float(item.get("quantity"))
     last_price = _coerce_float(item.get("last_price"))
     return quantity * last_price
-
-
-def load_kite_server_definition(settings: Settings | None = None) -> MCPServerDefinition:
-    settings = settings or get_settings()
-    if settings.kite_mcp_url.strip():
-        return MCPServerDefinition(
-            transport="http",
-            url=settings.kite_mcp_url,
-            command="",
-            args=[],
-            env={},
-        )
-
-    if not settings.kite_mcp_command.strip():
-        raise ToolExecutionError(
-            "Kite MCP is not configured for Artha. Set KITE_MCP_URL or KITE_MCP_COMMAND in .env."
-        )
-
-    return MCPServerDefinition(
-        transport="stdio",
-        url=None,
-        command=settings.kite_mcp_command,
-        args=settings.kite_mcp_args,
-        env=settings.kite_mcp_env_json,
-    )
-
-
-class KiteMCPClient:
-    def __init__(self, definition: MCPServerDefinition, timeout_seconds: int = 30):
-        self.definition = definition
-        self.timeout_seconds = timeout_seconds
-        self._stack = AsyncExitStack()
-        self._session = None
-
-    async def __aenter__(self) -> "KiteMCPClient":
-        try:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-            from mcp.client.streamable_http import streamable_http_client
-        except ImportError as exc:
-            raise ToolExecutionError(
-                "The 'mcp' package is required for Kite MCP access. Install requirements first."
-            ) from exc
-
-        try:
-            if self.definition.transport == "http":
-                read, write, _ = await self._stack.enter_async_context(
-                    streamable_http_client(self.definition.url or "")
-                )
-            else:
-                env = dict(os.environ)
-                env.update(self.definition.env)
-                server_params = StdioServerParameters(
-                    command=self.definition.command,
-                    args=self.definition.args,
-                    env=env,
-                )
-                read, write = await wait_for(
-                    self._stack.enter_async_context(stdio_client(server_params)),
-                    timeout=self.timeout_seconds,
-                )
-            self._session = await wait_for(
-                self._stack.enter_async_context(ClientSession(read, write)),
-                timeout=self.timeout_seconds,
-            )
-            await wait_for(self._session.initialize(), timeout=self.timeout_seconds)
-        except Exception as exc:
-            try:
-                await self._stack.aclose()
-            except Exception:
-                logger.debug("Ignoring MCP cleanup error after initialization failure", exc_info=True)
-            raise ToolExecutionError(
-                "Failed to initialize Kite MCP for Artha. Verify KITE_MCP_URL or KITE_MCP_COMMAND, "
-                "network access, and your Zerodha session."
-            ) from exc
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        try:
-            await self._stack.aclose()
-        except Exception as close_exc:
-            if self.definition.transport == "http":
-                logger.debug("Ignoring streamable HTTP shutdown bug during Kite MCP close", exc_info=True)
-                return
-            raise
-
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        if self._session is None:
-            raise ToolExecutionError("Kite MCP client is not connected.")
-
-        result = await self._session.call_tool(name, arguments or {})
-        if getattr(result, "structuredContent", None) is not None:
-            return result.structuredContent
-
-        content = []
-        for block in getattr(result, "content", []):
-            text = getattr(block, "text", None)
-            if text is not None:
-                content.append(text)
-        if not content:
-            return {}
-
-        joined = "\n".join(content).strip()
-        try:
-            return json.loads(joined)
-        except json.JSONDecodeError:
-            return {"raw_text": joined}
 
 
 def _extract_holdings_payload(raw_response: Any) -> list[dict[str, Any]]:
@@ -211,6 +90,32 @@ def _extract_mf_value(raw_mf_holdings: Any) -> float:
             current_value = _coerce_float(item.get("last_price")) * _coerce_float(item.get("quantity"))
         total += current_value
     return total
+
+
+def _normalize_mf_holding(item: dict[str, Any]) -> MFHolding:
+    quantity = _coerce_float(item.get("quantity"))
+    average_price = _coerce_float(item.get("average_price"))
+    last_price = _coerce_float(item.get("last_price"))
+    current_value = _coerce_float(item.get("current_value"), default=quantity * last_price)
+    pnl = _coerce_float(item.get("pnl"), default=current_value - (average_price * quantity))
+    base_value = average_price * quantity
+    pnl_pct = _coerce_float(
+        item.get("pnl_percentage"),
+        default=((pnl / base_value) * 100.0 if base_value else 0.0),
+    )
+    return MFHolding(
+        tradingsymbol=str(item.get("tradingsymbol", item.get("symbol", ""))).upper(),
+        fund=str(item.get("fund", item.get("scheme_name", item.get("name", "")))),
+        folio=str(item.get("folio", "")),
+        quantity=quantity,
+        average_price=average_price,
+        last_price=last_price,
+        current_value=current_value,
+        pnl=pnl,
+        pnl_pct=pnl_pct,
+        scheme_type=str(item.get("scheme_type", item.get("type", ""))),
+        plan=str(item.get("plan", "")),
+    )
 
 
 def _parse_target_weights_from_rules(rules_path: Path) -> dict[str, float]:
@@ -319,6 +224,26 @@ async def kite_get_portfolio(
     )
 
 
+async def kite_get_mf_snapshot(
+    kite_client: KiteMCPClient,
+    settings: Settings | None = None,
+) -> MFSnapshot:
+    del settings
+    try:
+        raw_mf_holdings = await kite_client.call_tool("get_mf_holdings")
+    except Exception as exc:
+        raise ToolExecutionError("Failed to fetch MF holdings from Kite MCP.") from exc
+
+    payload = _extract_holdings_payload(raw_mf_holdings)
+    holdings = [_normalize_mf_holding(item) for item in payload]
+    total_value = sum(holding.current_value for holding in holdings)
+    return MFSnapshot(
+        fetched_at=datetime.now(timezone.utc),
+        total_value=total_value,
+        holdings=holdings,
+    )
+
+
 async def kite_get_price_history(
     kite_client: KiteMCPClient,
     tradingsymbol: str,
@@ -339,11 +264,7 @@ async def kite_get_price_history(
             },
         )
     except Exception as exc:
-        logger.warning("Price history fetch failed for %s: %s", tradingsymbol, exc)
-        return {
-            "tradingsymbol": tradingsymbol,
-            "error": str(exc),
-        }
+        raise ToolExecutionError(f"Price history fetch failed for {tradingsymbol}: {exc}") from exc
 
     candles = _extract_holdings_payload(raw_history)
     if not candles and isinstance(raw_history, dict):
@@ -371,10 +292,7 @@ async def kite_get_price_history(
             )
 
     if not parsed:
-        return {
-            "tradingsymbol": tradingsymbol,
-            "error": "No historical data available",
-        }
+        raise ToolExecutionError(f"No historical data available for {tradingsymbol}")
 
     closes = [row["close"] for row in parsed if row["close"] > 0]
     highs = [row["high"] for row in parsed if row["high"] > 0]
@@ -385,7 +303,6 @@ async def kite_get_price_history(
     low_52w = min(lows) if lows else 0.0
 
     return {
-        "tradingsymbol": tradingsymbol,
         "52w_high": high_52w,
         "52w_low": low_52w,
         "current_vs_52w_high_pct": ((current_price / high_52w) - 1) * 100.0 if high_52w else 0.0,
@@ -495,18 +412,8 @@ async def wait_for_kite_login(
     )
 
 
-def save_portfolio_snapshot(snapshot: PortfolioSnapshot, settings: Settings | None = None) -> Path:
-    settings = settings or get_settings()
-    return save_kite_artifact(
-        snapshot.model_dump(mode="json"),
-        settings=settings,
-        category="portfolio",
-        stem="snapshot",
-    )
-
-
 def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any]]:
-    del settings
+    settings = settings or get_settings()
     return [
         {
             "name": "kite_get_portfolio",
@@ -538,18 +445,7 @@ def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any
                 "required": ["tradingsymbol", "instrument_token"],
             },
         },
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 12,
-            "user_location": {
-                "type": "approximate",
-                "city": "Bengaluru",
-                "region": "Karnataka",
-                "country": "IN",
-                "timezone": "Asia/Kolkata",
-            },
-        },
+        get_tavily_search_tool_definition(settings),
     ]
 
 
@@ -573,6 +469,14 @@ async def execute_tool_call(
                 instrument_token=int(tool_input["instrument_token"]),
                 days=int(tool_input.get("days", 365)),
             )
+        elif name == "tavily_search":
+            payload = {
+                "result": tavily_search(
+                    query=str(tool_input["query"]),
+                    max_results=int(tool_input.get("max_results", DEFAULT_TAVILY_MAX_RESULTS)),
+                    settings=settings,
+                )
+            }
         else:
             raise ToolExecutionError(f"Unknown tool requested: {name}")
 
