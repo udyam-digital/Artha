@@ -73,6 +73,16 @@ def test_langfuse_base_url_is_stripped() -> None:
     assert settings.langfuse_base_url == "https://cloud.langfuse.com"
 
 
+def test_analyst_runtime_controls_parse() -> None:
+    settings = Settings(
+        ANTHROPIC_API_KEY="test-key",
+        ANALYST_PARALLELISM=2,
+        ANALYST_MIN_START_INTERVAL_SECONDS=12.5,
+    )
+    assert settings.analyst_parallelism == 2
+    assert settings.analyst_min_start_interval_seconds == 12.5
+
+
 def test_none_inputs_are_normalized() -> None:
     settings = Settings(
         ANTHROPIC_API_KEY="test-key",

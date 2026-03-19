@@ -10,8 +10,8 @@
       "sector": "Industrials - Industrial Machinery & Components",
       "market_cap_category": "Large",
       "current_price": 4500.55,
-      "high_52w": 4987.0,
-      "low_52w": 2580.0,
+      "52w_high": 4987.0,
+      "52w_low": 2580.0,
       "time_horizon": "Compounder"
     },
     "thesis": {

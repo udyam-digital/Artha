@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
 
 from anthropic import AsyncAnthropic
 
@@ -113,6 +114,7 @@ async def get_company_artifact_and_verdict(
     skills_content: str,
     client: AsyncAnthropic,
     settings: Settings,
+    before_generate: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[CompanyAnalysisArtifact, StockVerdict, bool]:
     artifact: CompanyAnalysisArtifact | None = None
     from_cache = False
@@ -134,6 +136,8 @@ async def get_company_artifact_and_verdict(
         logger.warning("[%s] invalid company analysis cache; refreshing", holding.tradingsymbol, exc_info=True)
 
     if artifact is None:
+        if before_generate is not None:
+            await before_generate()
         started = time.perf_counter()
         artifact = await generate_company_artifact(
             holding=holding,

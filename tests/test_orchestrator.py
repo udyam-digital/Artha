@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import orchestrator
-from reliability import FullRunFailed
+from reliability import FullRunFailed, RetryFailure
 from config import Settings
 from kite_runtime import KiteSyncResult
 from models import Holding, MFSnapshot, MFHolding, PortfolioSnapshot, StockVerdict
@@ -38,14 +38,18 @@ class FakeKiteClient:
         return None
 
 
-def make_settings(tmp_path: Path) -> Settings:
-    return Settings(
-        ANTHROPIC_API_KEY="test-key",
-        REPORTS_DIR=str(tmp_path / "reports"),
-        KITE_DATA_DIR=str(tmp_path / "kite"),
-        MODEL="claude-sonnet-4-6",
-        ANALYST_MODEL="claude-haiku-4-5",
-    )
+def make_settings(tmp_path: Path, **overrides) -> Settings:
+    payload = {
+        "ANTHROPIC_API_KEY": "test-key",
+        "REPORTS_DIR": str(tmp_path / "reports"),
+        "KITE_DATA_DIR": str(tmp_path / "kite"),
+        "MODEL": "claude-sonnet-4-6",
+        "ANALYST_MODEL": "claude-haiku-4-5",
+        "ANALYST_PARALLELISM": 1,
+        "ANALYST_MIN_START_INTERVAL_SECONDS": 0,
+    }
+    payload.update(overrides)
+    return Settings(**payload)
 
 
 def make_holding(symbol: str, current_weight: float, target_weight: float) -> Holding:
@@ -182,7 +186,7 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     )
 
     assert set(state["symbols"]) == {"BSE", "KPITTECH"}
-    assert state["max_active"] <= 5
+    assert state["max_active"] <= settings.analyst_parallelism
     assert len(report.verdicts) == 2
     assert [verdict.tradingsymbol for verdict in report.verdicts] == ["BSE", "KPITTECH"]
     assert report.verdicts[0].rebalance_action == "HOLD"
@@ -259,6 +263,145 @@ async def test_run_full_analysis_reuses_fresh_company_cache(tmp_path: Path, monk
     assert report.verdicts[0].analysis_duration_seconds == 0.0
 
 
+async def test_run_full_analysis_respects_configured_analyst_parallelism(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path, ANALYST_PARALLELISM=2, ANALYST_MIN_START_INTERVAL_SECONDS=0)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[
+            make_holding("BSE", 14.0, 8.0),
+            make_holding("KPITTECH", 4.0, 8.0),
+            make_holding("HDFCBANK", 7.0, 8.0),
+        ],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    state = {"active": 0, "max_active": 0}
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        await kwargs["before_generate"]()
+        state["active"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        await asyncio.sleep(0)
+        state["active"] -= 1
+        symbol = kwargs["holding"].tradingsymbol
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol=symbol,
+                company_name=symbol,
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Valuation is rich.",
+                what_to_watch="Volumes",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    await orchestrator.run_full_analysis(settings)
+    assert state["max_active"] <= 2
+
+
+async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path, ANALYST_PARALLELISM=3, ANALYST_MIN_START_INTERVAL_SECONDS=0.05)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[
+            make_holding("BSE", 14.0, 8.0),
+            make_holding("KPITTECH", 4.0, 8.0),
+            make_holding("HDFCBANK", 7.0, 8.0),
+        ],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    start_times = []
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        await kwargs["before_generate"]()
+        start_times.append(asyncio.get_running_loop().time())
+        symbol = kwargs["holding"].tradingsymbol
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol=symbol,
+                company_name=symbol,
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Valuation is rich.",
+                what_to_watch="Volumes",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    await orchestrator.run_full_analysis(settings)
+    assert len(start_times) == 3
+    assert start_times[1] - start_times[0] >= 0.045
+    assert start_times[2] - start_times[1] >= 0.045
+
+
 async def test_run_full_analysis_fails_fast_and_logs_error(tmp_path: Path, monkeypatch) -> None:
     settings = make_settings(tmp_path)
     snapshot = PortfolioSnapshot(
@@ -299,6 +442,197 @@ async def test_run_full_analysis_fails_fast_and_logs_error(tmp_path: Path, monke
     assert exc.ticker == "KPITTECH"
     assert exc.error_log_path is not None
     assert exc.error_log_path.exists()
+
+
+async def test_run_full_analysis_fails_fast_on_kite_sync_retry_failure(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+
+    async def fake_run_with_retries(func, *, phase, **kwargs):
+        if phase == "kite_sync":
+            raise RetryFailure(
+                phase="kite_sync",
+                cause=TimeoutError("kite timeout"),
+                retries_used=2,
+            )
+        return await func()
+
+    monkeypatch.setattr(orchestrator, "run_with_retries", fake_run_with_retries)
+
+    with pytest.raises(FullRunFailed) as exc_info:
+        await orchestrator.run_full_analysis(settings)
+
+    assert exc_info.value.phase == "kite_sync"
+    assert exc_info.value.error_log_path is not None
+    assert exc_info.value.error_log_path.exists()
+
+
+async def test_run_full_analysis_fails_fast_on_price_history_retry_failure(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def failing_price_contexts(**kwargs):
+        raise RetryFailure(
+            phase="price_history",
+            cause=TimeoutError("price timeout"),
+            retries_used=1,
+            ticker="KPITTECH",
+        )
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "_price_contexts", failing_price_contexts)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    with pytest.raises(FullRunFailed) as exc_info:
+        await orchestrator.run_full_analysis(settings)
+
+    assert exc_info.value.phase == "price_history"
+    assert exc_info.value.ticker == "KPITTECH"
+
+
+async def test_run_full_analysis_fails_on_verdict_error_payload(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="KPITTECH",
+                company_name="KPIT Tech",
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=100.0,
+                buy_price=100.0,
+                pnl_pct=0.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Needs review.",
+                what_to_watch="Deal wins",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error="analyst returned fallback",
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    with pytest.raises(FullRunFailed) as exc_info:
+        await orchestrator.run_full_analysis(settings)
+
+    assert exc_info.value.phase == "analyst"
+    assert exc_info.value.ticker == "KPITTECH"
+
+
+async def test_run_full_analysis_fails_fast_on_summary_retry_failure(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_kite_data(settings):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="KPITTECH",
+                company_name="KPIT Tech",
+                verdict="BUY",
+                confidence="HIGH",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Auto slowdown risk.",
+                what_to_watch="Deal wins",
+                red_flags=[],
+                rebalance_action="BUY",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    async def fake_run_with_retries(func, *, phase, **kwargs):
+        if phase == "portfolio_summary":
+            raise RetryFailure(
+                phase="portfolio_summary",
+                cause=TimeoutError("summary timeout"),
+                retries_used=2,
+            )
+        return await func()
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "run_with_retries", fake_run_with_retries)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    with pytest.raises(FullRunFailed) as exc_info:
+        await orchestrator.run_full_analysis(settings)
+
+    assert exc_info.value.phase == "portfolio_summary"
 
 
 async def test_run_single_company_analysis_returns_portfolio_report(tmp_path: Path, monkeypatch) -> None:
@@ -353,3 +687,77 @@ async def test_run_single_company_analysis_returns_portfolio_report(tmp_path: Pa
     assert len(report.verdicts) == 1
     assert report.verdicts[0].tradingsymbol == "KPITTECH"
     assert report.portfolio_snapshot.total_value == 10_000.0
+
+
+async def test_run_single_company_analysis_handles_missing_snapshot(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+
+    monkeypatch.setattr(
+        "snapshot_store.load_latest_portfolio_snapshot",
+        lambda settings: (_ for _ in ()).throw(FileNotFoundError("missing snapshot")),
+    )
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="INFY",
+                company_name="Infosys",
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=0.0,
+                buy_price=0.0,
+                pnl_pct=0.0,
+                thesis_intact=True,
+                bull_case="Stable franchise.",
+                bear_case="IT slowdown risk.",
+                what_to_watch="Deal wins",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=0.0,
+                error=None,
+            ),
+            True,
+        )
+
+    async def fake_price_contexts(**kwargs):
+        return {}
+
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "_price_contexts", fake_price_contexts)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    report = await orchestrator.run_single_company_analysis(settings=settings, ticker="INFY")
+    assert report.verdicts[0].tradingsymbol == "INFY"
+    assert [holding.tradingsymbol for holding in report.portfolio_snapshot.holdings] == ["INFY"]
+
+
+def test_gate_helpers_cover_sell_and_missing_action() -> None:
+    verdict = StockVerdict(
+        tradingsymbol="BSE",
+        company_name="BSE Ltd",
+        verdict="SELL",
+        confidence="MEDIUM",
+        current_price=100.0,
+        buy_price=90.0,
+        pnl_pct=10.0,
+        thesis_intact=True,
+        bull_case="Good franchise.",
+        bear_case="Valuation is rich.",
+        what_to_watch="Volumes",
+        red_flags=[],
+        rebalance_action="BUY",
+        rebalance_rupees=1000.0,
+        rebalance_reasoning="Placeholder.",
+        data_sources=["https://example.com"],
+        analysis_duration_seconds=1.0,
+        error=None,
+    )
+    merged = orchestrator._merge_action_into_verdict(verdict, None)
+    assert merged.rebalance_action == "HOLD"
+    assert orchestrator._should_gate_to_hold("SELL", True) is True
+    assert orchestrator._should_gate_to_hold("STRONG_SELL", False) is False
+    assert orchestrator._should_gate_to_hold("UNKNOWN", True) is True

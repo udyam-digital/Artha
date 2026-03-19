@@ -33,6 +33,8 @@ Model routing in `.env`:
 MODEL=claude-sonnet-4-6
 ANALYST_MODEL=claude-haiku-4-5
 ANALYST_MAX_TOKENS=2500
+ANALYST_PARALLELISM=1
+ANALYST_MIN_START_INTERVAL_SECONDS=65
 SUMMARY_MAX_TOKENS=700
 COMPANY_ANALYSIS_MAX_AGE_DAYS=7
 TRANSIENT_RETRY_ATTEMPTS=3
@@ -105,7 +107,7 @@ Observability and tracing:
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch 52-week price context once per analyzable equity holding
 4. Check `data/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
-5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and native `web_search`, bounded by `asyncio.Semaphore(5)`
+5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and native `web_search`, bounded by configurable parallelism and paced starts to stay within provider TPM limits
 6. Convert each cached or refreshed company artifact into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
 8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
@@ -144,6 +146,7 @@ Company artifact cache:
 
 - `data/companies/{ticker}.json` stores strict JSON with metadata and a validated analyst report card
 - artifacts are reused for up to `COMPANY_ANALYSIS_MAX_AGE_DAYS` days
+- legacy `high_52w` / `low_52w` company artifacts are auto-migrated to canonical `52w_high` / `52w_low` keys on load
 - old Python-code-style analyst payloads are not reused; they are treated as invalid cache and refreshed
 - `reports/usage/llm_usage_YYYYMMDD.jsonl` stores the per-call Anthropic usage ledger used for cost analysis
 - `reports/usage/run_summaries.jsonl` stores one persistent cross-run summary row per portfolio, research, or ticker run
@@ -163,6 +166,8 @@ Data layout:
 - `MODEL`: main Artha agent, portfolio synthesis, and deep-research orchestration defaults to `claude-sonnet-4-6`
 - `ANALYST_MODEL`: per-holding analyst sub-agents default to `claude-haiku-4-5`
 - `ANALYST_MAX_TOKENS`: lower output cap for company artifact generation
+- `ANALYST_PARALLELISM`: max concurrent analyst refresh jobs, default `1`
+- `ANALYST_MIN_START_INTERVAL_SECONDS`: minimum spacing between analyst refresh starts, default `65`
 - `SUMMARY_MAX_TOKENS`: lower output cap for the final Sonnet summary
 - `COMPANY_ANALYSIS_MAX_AGE_DAYS`: company-analysis cache freshness window, default `7`
 

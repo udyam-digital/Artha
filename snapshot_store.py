@@ -16,7 +16,7 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 def _write_model(model: BaseModel, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
+    path.write_text(model.model_dump_json(indent=2, by_alias=True), encoding="utf-8")
 
 
 def _write_payload(payload: dict, path: Path) -> None:
@@ -118,4 +118,19 @@ def load_company_analysis_artifact(
     settings: Settings | None = None,
 ) -> CompanyAnalysisArtifact:
     path = company_analysis_path(ticker, settings=settings)
-    return CompanyAnalysisArtifact.model_validate_json(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    migrated = False
+
+    stock_snapshot = payload.get("report_card", {}).get("stock_snapshot", {})
+    if isinstance(stock_snapshot, dict):
+        if "high_52w" in stock_snapshot and "52w_high" not in stock_snapshot:
+            stock_snapshot["52w_high"] = stock_snapshot.pop("high_52w")
+            migrated = True
+        if "low_52w" in stock_snapshot and "52w_low" not in stock_snapshot:
+            stock_snapshot["52w_low"] = stock_snapshot.pop("low_52w")
+            migrated = True
+
+    artifact = CompanyAnalysisArtifact.model_validate(payload)
+    if migrated:
+        _write_model(artifact, path)
+    return artifact

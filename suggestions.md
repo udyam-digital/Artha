@@ -166,7 +166,8 @@ These recommendations position Artha as a world-class AI-powered portfolio analy
 - Consider an event-aware refresh policy on top of the 7-day cache. Earnings dates, exchange filings, and large price moves should be able to invalidate a company artifact earlier than the pure time-based TTL.
 
 ### Reliability
-- Add retry with jittered backoff around all Anthropic calls in `analyst.py`, `orchestrator.py`, and `research.py`. Parallel analyst fan-out increases exposure to transient rate limits.
+- Add adaptive rate limiting around Anthropic analyst calls in addition to the existing retries. The repo now has bounded transient retries and persistent failure logs; the next improvement is dynamic TPM-aware pacing or prompt-size reduction so long full runs do not serialize more than necessary.
+- Fix the hosted Kite MCP session-bound auth mismatch. `kite-login` can authenticate one MCP session while `run` opens another, so the next reliability improvement is session reuse or a clearer auth handoff for full runs.
 - Persist a run manifest per portfolio analysis that captures the synced snapshot paths, per-holding price-context payloads, elapsed time, and final verdict count. That will materially improve auditability.
 - Cache recent price-history context and recent analyst verdicts for a short TTL. That will reduce redundant Kite and Anthropic load during repeated runs on the same day.
 

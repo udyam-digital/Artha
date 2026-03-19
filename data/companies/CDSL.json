@@ -10,8 +10,8 @@
       "sector": "Financial Services - Capital Markets Infrastructure",
       "market_cap_category": "Large",
       "current_price": 1233.6,
-      "high_52w": 1828.9,
-      "low_52w": 1047.45,
+      "52w_high": 1828.9,
+      "52w_low": 1047.45,
       "time_horizon": "Cyclical"
     },
     "thesis": {

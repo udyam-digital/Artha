@@ -222,7 +222,22 @@ async def run_full_analysis(
             partial_artifact_path=exc.partial_artifact_path,
         ) from exc
 
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(settings.analyst_parallelism)
+    analyst_start_lock = asyncio.Lock()
+    next_analyst_start_at = 0.0
+
+    async def throttle_analyst_start() -> None:
+        nonlocal next_analyst_start_at
+        min_interval_seconds = max(settings.analyst_min_start_interval_seconds, 0.0)
+        if min_interval_seconds <= 0:
+            return
+
+        async with analyst_start_lock:
+            now = time.monotonic()
+            delay_seconds = max(0.0, next_analyst_start_at - now)
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+            next_analyst_start_at = time.monotonic() + min_interval_seconds
 
     async def bounded_analyse(holding: Holding) -> StockVerdict:
         async with semaphore:
@@ -233,6 +248,7 @@ async def run_full_analysis(
                     skills_content=skills_content,
                     client=client,
                     settings=settings,
+                    before_generate=throttle_analyst_start,
                 ),
                 attempts=settings.transient_retry_attempts,
                 base_delay_seconds=settings.transient_retry_base_delay_seconds,
@@ -351,9 +367,10 @@ async def run_full_analysis(
     )
     elapsed = time.perf_counter() - started
     logger.info(
-        "Full analysis completed in %.1fs across %s analyst sub-agents",
+        "Full analysis completed in %.1fs across %s analyst sub-agents with parallelism=%s",
         elapsed,
         len(verdicts),
+        settings.analyst_parallelism,
     )
     return PortfolioReport(
         generated_at=sync_result.portfolio_snapshot.fetched_at,

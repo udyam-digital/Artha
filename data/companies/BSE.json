@@ -10,8 +10,8 @@
       "sector": "Financial Services",
       "market_cap_category": "Large",
       "current_price": 2995.6,
-      "high_52w": 3227.0,
-      "low_52w": 1300.0,
+      "52w_high": 3227.0,
+      "52w_low": 1300.0,
       "time_horizon": "Compounder"
     },
     "thesis": {
