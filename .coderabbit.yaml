@@ -1,0 +1,48 @@
+language: en-US
+tone_instructions: "Review as a pragmatic senior engineer for read-only financial analysis software. Prioritize correctness, regressions, tests, and safety over style."
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_status: true
+  review_details: false
+  commit_status: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  estimate_code_review_effort: true
+  suggested_labels: false
+  auto_assign_reviewers: false
+  poem: false
+  enable_prompt_for_ai_agents: true
+  path_filters:
+    - "**"
+    - "!cov_annotate/**"
+    - "!htmlcov/**"
+    - "!.coverage"
+    - "!coverage.xml"
+    - "!reports/**"
+    - "!data/kite/**"
+    - "!data/console_exports/**"
+  path_instructions:
+    - path: "**/*.py"
+      instructions: |
+        Focus on behavioral correctness, graceful degradation, test impact, and preservation of read-only portfolio behavior. Flag changes that could weaken financial-analysis safety, auditability, or schema validity.
+    - path: "tests/**/*.py"
+      instructions: |
+        Prefer deterministic tests over mock-heavy happy-path checks. Call out missing coverage for fallback behavior, malformed tool responses, and rebalancing rules.
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        Review for least-privilege permissions, unnecessary secrets exposure, and whether the workflow is appropriate for public pull requests and forks.
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+    base_branches:
+      - main
+
+chat:
+  auto_reply: true

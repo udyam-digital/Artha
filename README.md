@@ -211,6 +211,23 @@ UI companion:
 
 Artha provides analysis only. Never execute trades automatically from its output.
 
+## Repository Automation
+
+The repository includes a baseline GitHub automation setup:
+
+- `.github/workflows/ci.yml`: required PR CI for Python 3.11, pytest, and coverage with an 80% minimum threshold
+- `.github/workflows/codeql.yml`: required CodeQL scanning for Python on pull requests, pushes to `main`, and a weekly schedule
+- `.github/dependabot.yml`: weekly grouped updates for Python dependencies and GitHub Actions
+- `.github/copilot-instructions.md`: repository-wide Copilot guidance for review and code generation
+- `.coderabbit.yaml`: CodeRabbit review guidance with automatic PR review enabled once the GitHub app is installed
+
+Recommended GitHub repository settings:
+
+- require the `CI` and `CodeQL` checks before merge
+- require at least one human approval before merge
+- enable secret scanning and push protection
+- install the CodeRabbit GitHub app if you want automatic AI PR reviews on this public repository
+
 ## Copilot Repo Guidance
 
 Repo-local Copilot assets currently installed under `.github/skills/`:
@@ -239,7 +256,7 @@ Repo-local Copilot assets currently installed under `.github/skills/`:
 - `suggest-awesome-github-copilot-instructions`
 - `suggest-awesome-github-copilot-skills`
 
-There are currently no repo-local custom agents in `.github/agents/` and no repo-local custom instructions in `.github/instructions/`.
+Repo-local custom agents are present under `.github/agents/`. Repository-wide Copilot instructions are present in `.github/copilot-instructions.md`. There are currently no path-specific custom instruction files under `.github/instructions/`.
 
 For this repository, the highest-value skills are:
 
@@ -249,5 +266,3 @@ For this repository, the highest-value skills are:
 - `create-readme` to keep repository guidance accurate
 - `dependabot`, `codeql`, and `secret-scanning` for repository guardrails
 - the three `suggest-awesome-*` skills for recommending missing Copilot assets without installing them blindly
-
-If you add custom instructions or agents later, keep them tightly scoped to this repo's Python, FastAPI, Anthropic, Kite MCP, and read-only financial-analysis constraints.

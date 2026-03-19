@@ -30,16 +30,17 @@ The system makes high-stakes financial-analysis statements. Before presenting or
 
 The point is not to make the prose prettier; it is to reduce incorrect factual or numeric statements in a production-adjacent finance workflow.
 
-### 3. Fix the repo automation gap
+### 3. Raise the CI and review bar further
 
 Relevant skills: `dependabot`, `codeql`, `secret-scanning`, `gh-cli`
 
-The repository currently has `.github/skills/` but no visible GitHub Actions workflows, no Dependabot config, no CodeQL config, and no repo-local custom instructions or agents. The next practical additions are:
+The baseline repo automation now exists. The next practical additions are:
 
-- `/.github/workflows/ci.yml` for pytest, coverage, and basic static checks
-- `/.github/dependabot.yml`
-- `/.github/workflows/codeql.yml`
-- repository secret-scanning and push-protection setup guidance
+- add a fast linter job, preferably `ruff`, to `/.github/workflows/ci.yml`
+- make branch protection require `CI`, `CodeQL`, and one human approval
+- enable repository secret scanning and push protection in GitHub settings
+- install and tune CodeRabbit on the public repo now that public-repo reviews are free
+- add path-specific Copilot instructions under `/.github/instructions/` if review guidance becomes too broad
 
 This will do more for long-term quality than adding more prompt text.
 
@@ -108,7 +109,8 @@ These files already form a service layer. If the codebase grows, move them under
 ### Current state
 
 - Repo-local skills exist under `.github/skills/`
-- There is no `.github/agents/` directory
+- Repo-local custom agents exist under `.github/agents/`
+- Repository-wide Copilot instructions exist at `.github/copilot-instructions.md`
 - There is no `.github/instructions/` directory
 
 ### Recommended custom instructions to add
@@ -148,6 +150,5 @@ Install a narrow set first. `api-architect.agent.md` and `agent-governance-revie
 
 ### Suggested next repo-doc additions
 
-- Add a short section documenting the absence or presence of `.github/agents/` and `.github/instructions/`
-- Add a minimal CI/quality roadmap to README once workflows exist
+- Add path-specific instruction files under `.github/instructions/` once review guidance needs to differ by area
 - Add ADRs for cache invalidation policy, report verification, and API streaming contracts once those decisions are made
