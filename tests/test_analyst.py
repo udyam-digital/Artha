@@ -2,29 +2,52 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from analysis.analyst import analyse_stock
 from config import Settings
-from models import Holding
+from models import AnalystReportCard, Holding
 
 
 pytestmark = pytest.mark.anyio
 
 
 class FakeAnthropicClient:
-    def __init__(self, responses):
+    def __init__(self, responses: list[Any]):
         self._responses = list(responses)
-        self.calls = []
+        self.calls: list[dict[str, Any]] = []
+        self.count_calls: list[dict[str, Any]] = []
+        self.last_response: Any = None
+
+    async def messages_count_tokens(self, **kwargs):
+        self.count_calls.append(kwargs)
+        return SimpleNamespace(input_tokens=111)
 
     async def messages_create(self, **kwargs):
         self.calls.append(kwargs)
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        self.last_response = response
+        return response
+
+    async def messages_create_with_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self._responses.pop(0) if self._responses else self.last_response
+        if isinstance(response, Exception):
+            raise response
+        payload = getattr(response, "payload", response)
+        return kwargs["response_model"].model_validate(payload), response
 
     @property
     def messages(self):
-        return SimpleNamespace(create=self.messages_create)
+        return SimpleNamespace(
+            create=self.messages_create,
+            create_with_completion=self.messages_create_with_completion,
+            count_tokens=self.messages_count_tokens,
+        )
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -53,89 +76,98 @@ def make_holding() -> Holding:
     )
 
 
-def make_report_card_json(ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD") -> str:
-    return f"""{{
-    "stock_snapshot": {{
-        "name": "{name}",
-        "ticker": "{ticker}",
-        "sector": "Technology",
-        "market_cap_category": "Mid",
-        "52w_high": 1928.0,
-        "52w_low": 980.0,
-        "current_price": 1420.0,
-        "time_horizon": "Compounder"
-    }},
-    "thesis": {{
-        "core_idea": "Engineering-led software franchise.",
-        "growth_driver": "Auto software demand remains healthy.",
-        "edge": "Deep domain capability.",
-        "trigger": "Large deal pipeline conversion"
-    }},
-    "growth_engine": {{
-        "revenue_cagr": "24%",
-        "eps_cagr": "22%",
-        "sector_tailwind": "High",
-        "growth_score": 8
-    }},
-    "quality": {{
-        "roce": "28%",
-        "roe": "24%",
-        "debt_to_equity": "0.02",
-        "fcf_status": "Positive",
-        "governance_flags": "None identified",
-        "quality_score": 8
-    }},
-    "valuation": {{
-        "pe": "52x",
-        "sector_pe": "48x",
-        "peg": "2.1",
-        "fcf_yield": "1.8%",
-        "fair_value_range": [1300, 1500],
-        "margin_of_safety": "Limited",
-        "rvs_score": 6
-    }},
-    "timing": {{
-        "price_vs_200dma": "+6%",
-        "momentum": "Neutral",
-        "fii_trend": "Stable",
-        "timing_signal": "Neutral"
-    }},
-    "capital_efficiency": {{
-        "roic_trend": "Improving",
-        "reinvestment_quality": "Disciplined",
-        "capital_efficiency_score": 8
-    }},
-    "risk_matrix": {{
-        "structural_risks": ["Auto program delays"],
-        "cyclical_risks": ["Global auto slowdown"],
-        "company_risks": ["Execution slippage"],
-        "risk_level": "Medium"
-    }},
-    "action_plan": {{
-        "buy_zone": [1250, 1350],
-        "add_zone": 1380,
-        "hold_zone": "1350-1550",
-        "trim_zone": 1650,
-        "stop_loss": 1180
-    }},
-    "position_sizing": {{
-        "suggested_allocation": "5-6%",
-        "max_allocation": "8%"
-    }},
-    "final_verdict": {{
-        "verdict": "{final_verdict}",
-        "confidence": "High"
-    }},
-    "monitoring": {{
-        "next_triggers": ["Quarterly margin trajectory"],
-        "key_metrics": ["Large-deal wins"],
-        "red_flags": ["Client concentration rise"]
-    }},
-    "data_sources": [
-        "https://www.screener.in/company/{ticker}/",
-        "https://www.example.com/{ticker.lower()}-results"
-    ]
-}}"""
+def make_report_card_payload(ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD") -> dict[str, Any]:
+    return {
+        "stock_snapshot": {
+            "name": name,
+            "ticker": ticker,
+            "sector": "Technology",
+            "market_cap_category": "Mid",
+            "52w_high": 1928.0,
+            "52w_low": 980.0,
+            "current_price": 1420.0,
+            "time_horizon": "Compounder",
+        },
+        "thesis": {
+            "core_idea": "Engineering-led software franchise.",
+            "growth_driver": "Auto software demand remains healthy.",
+            "edge": "Deep domain capability.",
+            "trigger": "Large deal pipeline conversion",
+        },
+        "growth_engine": {
+            "revenue_cagr": "24%",
+            "eps_cagr": "22%",
+            "sector_tailwind": "High",
+            "growth_score": 8,
+        },
+        "quality": {
+            "roce": "28%",
+            "roe": "24%",
+            "debt_to_equity": "0.02",
+            "fcf_status": "Positive",
+            "governance_flags": "None identified",
+            "quality_score": 8,
+        },
+        "valuation": {
+            "pe": "52x",
+            "sector_pe": "48x",
+            "peg": "2.1",
+            "fcf_yield": "1.8%",
+            "fair_value_range": [1300, 1500],
+            "margin_of_safety": "Limited",
+            "rvs_score": 6,
+        },
+        "timing": {
+            "price_vs_200dma": "+6%",
+            "momentum": "Neutral",
+            "fii_trend": "Stable",
+            "timing_signal": "Neutral",
+        },
+        "capital_efficiency": {
+            "roic_trend": "Improving",
+            "reinvestment_quality": "Disciplined",
+            "capital_efficiency_score": 8,
+        },
+        "risk_matrix": {
+            "structural_risks": ["Auto program delays"],
+            "cyclical_risks": ["Global auto slowdown"],
+            "company_risks": ["Execution slippage"],
+            "risk_level": "Medium",
+        },
+        "action_plan": {
+            "buy_zone": [1250, 1350],
+            "add_zone": 1380,
+            "hold_zone": "1350-1550",
+            "trim_zone": 1650,
+            "stop_loss": 1180,
+        },
+        "position_sizing": {
+            "suggested_allocation": "5-6%",
+            "max_allocation": "8%",
+        },
+        "final_verdict": {
+            "verdict": final_verdict,
+            "confidence": "High",
+        },
+        "monitoring": {
+            "next_triggers": ["Quarterly margin trajectory"],
+            "key_metrics": ["Large-deal wins"],
+            "red_flags": ["Client concentration rise"],
+        },
+        "data_sources": [
+            f"https://www.screener.in/company/{ticker}/",
+            f"https://www.example.com/{ticker.lower()}-results",
+        ],
+    }
+
+
+def make_final_response(ticker: str = "KPITTECH", name: str = "KPIT Technologies", final_verdict: str = "ADD"):
+    return SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="structured response")],
+        payload=make_report_card_payload(ticker, name=name, final_verdict=final_verdict),
+        usage=SimpleNamespace(input_tokens=100, output_tokens=50),
+    )
 
 
 async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> None:
@@ -144,16 +176,9 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
         content=[
             SimpleNamespace(type="tool_use", id="tool-1", name="tavily_search", input={"query": "KPIT results"})
         ],
+        usage=SimpleNamespace(input_tokens=10, output_tokens=5),
     )
-    final_response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[
-            SimpleNamespace(
-                type="text",
-                text=make_report_card_json("KPITTECH"),
-            )
-        ],
-    )
+    final_response = make_final_response("KPITTECH")
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("analysis.analyst.tavily_search", lambda **kwargs: "Summary: KPIT result")
@@ -175,14 +200,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
 
 
 async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
-    client = FakeAnthropicClient(
-        [
-            SimpleNamespace(
-                stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
-            )
-        ]
-    )
+    client = FakeAnthropicClient([make_final_response("KPITTECH")])
     await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
@@ -195,14 +213,7 @@ async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
 
 
 async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> None:
-    client = FakeAnthropicClient(
-        [
-            SimpleNamespace(
-                stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
-            )
-        ]
-    )
+    client = FakeAnthropicClient([make_final_response("KPITTECH")])
     await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
@@ -236,13 +247,12 @@ async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> 
 
 
 async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
-    response = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="invalid")])
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
         skills_content="system",
-        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
+        client=FakeAnthropicClient([ValueError("invalid")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
     assert verdict.verdict == "HOLD"
@@ -250,16 +260,12 @@ async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
 
 
 async def test_analyse_stock_falls_back_on_invalid_json(tmp_path: Path) -> None:
-    response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text="{not-json}")],
-    )
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
         skills_content="system",
-        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
+        client=FakeAnthropicClient([ValueError("{not-json}")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
     assert verdict.verdict == "HOLD"
@@ -269,12 +275,9 @@ async def test_analyse_stock_falls_back_on_invalid_json(tmp_path: Path) -> None:
 async def test_analyse_stock_falls_back_on_invalid_schema(tmp_path: Path) -> None:
     response = SimpleNamespace(
         stop_reason="end_turn",
-        content=[
-            SimpleNamespace(
-                type="text",
-                text='{"tradingsymbol":"KPITTECH","company_name":"KPIT Tech"}',
-            )
-        ],
+        content=[SimpleNamespace(type="text", text="partial structured response")],
+        payload={"tradingsymbol": "KPITTECH", "company_name": "KPIT Tech"},
+        usage=SimpleNamespace(input_tokens=10, output_tokens=5),
     )
     verdict = await analyse_stock(
         holding=make_holding(),
@@ -289,15 +292,6 @@ async def test_analyse_stock_falls_back_on_invalid_schema(tmp_path: Path) -> Non
 
 
 async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
-    response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[
-            SimpleNamespace(
-                type="text",
-                text=make_report_card_json("INFY", name="Infosys", final_verdict="HOLD"),
-            )
-        ],
-    )
     holding = Holding(
         tradingsymbol="INFY",
         exchange="NSE",
@@ -318,7 +312,7 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
         portfolio_total_value=0.0,
         price_context={},
         skills_content="system",
-        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
+        client=FakeAnthropicClient([make_final_response("INFY", name="Infosys", final_verdict="HOLD")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
     monkeypatch.undo()
@@ -330,54 +324,20 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
 
 
 async def test_analyse_stock_rejects_legacy_python_payload(tmp_path: Path) -> None:
-    response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text="output = {'stock_snapshot': {}}")],
-    )
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
         skills_content="system",
-        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
+        client=FakeAnthropicClient([ValueError("output = {'stock_snapshot': {}}")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
     assert verdict.verdict == "HOLD"
     assert verdict.error is not None
 
 
-async def test_analyse_stock_extracts_json_from_wrapped_text(tmp_path: Path) -> None:
-    response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[
-            SimpleNamespace(
-                type="text",
-                text=f"Here is the report card you requested:\n```json\n{make_report_card_json('KPITTECH')}\n```",
-            )
-        ],
-    )
-    verdict = await analyse_stock(
-        holding=make_holding(),
-        portfolio_total_value=10_000.0,
-        price_context={},
-        skills_content="system",
-        client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
-        config=make_settings(tmp_path),
-    )
-    assert verdict.verdict == "BUY"
-    assert verdict.error is None
-
-
-async def test_analyse_stock_repairs_invalid_json_with_followup_turn(tmp_path: Path) -> None:
-    invalid_response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text="I found the right data. Returning it now.")],
-    )
-    fixed_response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
-    )
-    client = FakeAnthropicClient([invalid_response, fixed_response])
+async def test_analyse_stock_returns_fallback_on_instructor_validation_error(tmp_path: Path) -> None:
+    client = FakeAnthropicClient([make_final_response("KPITTECH"), ValueError("validation failed")])
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
@@ -386,8 +346,8 @@ async def test_analyse_stock_repairs_invalid_json_with_followup_turn(tmp_path: P
         client=client,  # type: ignore[arg-type]
         config=make_settings(tmp_path),
     )
-    assert verdict.verdict == "BUY"
-    assert verdict.error is None
+    assert verdict.verdict == "HOLD"
+    assert verdict.error is not None
     assert len(client.calls) == 2
 
 
@@ -396,11 +356,12 @@ async def test_analyse_stock_enforces_tavily_search_budget(tmp_path: Path) -> No
         SimpleNamespace(type="tool_use", id=f"tool-{index}", name="tavily_search", input={"query": f"KPIT {index}"})
         for index in range(1, 5)
     ]
-    tool_use_response = SimpleNamespace(stop_reason="tool_use", content=tool_uses)
-    final_response = SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
+    tool_use_response = SimpleNamespace(
+        stop_reason="tool_use",
+        content=tool_uses,
+        usage=SimpleNamespace(input_tokens=10, output_tokens=5),
     )
+    final_response = make_final_response("KPITTECH")
     client = FakeAnthropicClient([tool_use_response, final_response])
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("analysis.analyst.tavily_search", lambda **kwargs: f"Summary: {kwargs['query']}")

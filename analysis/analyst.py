@@ -6,11 +6,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import instructor
 from anthropic import AsyncAnthropic
 
 from config import Settings
 from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
-from observability.usage import log_estimated_input_tokens, record_anthropic_usage
+from observability.usage import count_input_tokens_exact, log_estimated_input_tokens, record_anthropic_usage
 from persistence.store import save_company_analysis_artifact
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
@@ -18,10 +19,13 @@ from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_def
 logger = logging.getLogger(__name__)
 
 MAX_ANALYST_ITERATIONS = 6
-JSON_PARSE_REPAIR_PROMPT = (
-    "Your previous response was not valid JSON for the required analyst report card schema. "
-    "Return exactly one valid JSON object only. Do not include markdown, prose, XML, code fences, or explanations."
-)
+
+
+def _make_instructor_client(api_key: str) -> instructor.AsyncInstructor:
+    return instructor.from_anthropic(
+        AsyncAnthropic(api_key=api_key),
+        mode=instructor.Mode.ANTHROPIC_JSON,
+    )
 
 
 def _extract_text(response: Any) -> str:
@@ -32,32 +36,104 @@ def _extract_text(response: Any) -> str:
     return "\n".join(text_parts).strip()
 
 
-def _extract_report_card_dict(raw_text: str) -> dict[str, Any]:
-    text = raw_text.strip()
-    if not text:
-        raise ValueError("Analyst response was empty.")
+def _serialize_content_blocks(blocks: list[Any]) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for block in blocks:
+        block_type = getattr(block, "type", None)
+        if block_type == "text":
+            serialized.append({"type": "text", "text": getattr(block, "text", "")})
+            continue
+        if block_type == "tool_use":
+            serialized.append(
+                {
+                    "type": "tool_use",
+                    "id": getattr(block, "id", ""),
+                    "name": getattr(block, "name", ""),
+                    "input": getattr(block, "input", {}) or {},
+                }
+            )
+            continue
+        serialized.append({"type": str(block_type or "unknown")})
+    return serialized
+
+
+def _ensure_instructor_client(client: Any, *, api_key: str) -> Any:
+    messages = getattr(client, "messages", None)
+    if messages is not None and hasattr(messages, "create_with_completion"):
+        return client
+    if isinstance(client, AsyncAnthropic):
+        return instructor.from_anthropic(client, mode=instructor.Mode.ANTHROPIC_JSON)
+    if messages is not None and hasattr(messages, "create"):
+        return client
+    return _make_instructor_client(api_key)
+
+
+def _raw_client_for_counting(client: Any) -> AsyncAnthropic | Any:
+    return getattr(client, "client", client)
+
+
+async def _log_input_tokens(
+    *,
+    label: str,
+    client: Any,
+    model: str,
+    messages: list[dict[str, Any]],
+    system: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+) -> None:
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        payload = _extract_first_json_object(text)
-    if not isinstance(payload, dict):
-        raise ValueError("Analyst response was not a JSON object.")
-    return payload
+        exact = await count_input_tokens_exact(
+            client=_raw_client_for_counting(client),
+            model=model,
+            messages=messages,
+            system=system,
+            tools=tools,
+        )
+    except Exception as exc:
+        logger.warning("%s exact token counting failed; falling back to estimate: %s", label, exc)
+        log_estimated_input_tokens(label=label, messages=messages, system=system)
+        return
+    logger.info("%s exact input tokens: %s", label, exact)
 
 
-def _extract_first_json_object(text: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    preview = text[:240].replace("\n", "\\n")
-    raise ValueError(f"Analyst response did not contain a valid JSON object. Preview: {preview}")
+async def _coerce_report_card_with_instructor(
+    *,
+    instructor_client: Any,
+    config: Settings,
+    holding: Holding,
+    raw_text: str,
+) -> tuple[AnalystReportCard, Any]:
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "Convert the following stock analysis draft into a valid AnalystReportCard JSON object. "
+                "Use only facts present in the draft. Do not add commentary outside the schema.\n"
+                f"Ticker: {holding.tradingsymbol}\n"
+                f"Draft:\n{raw_text}"
+            ),
+        }
+    ]
+    await _log_input_tokens(
+        label=f"[{holding.tradingsymbol}] [structured]",
+        client=instructor_client,
+        model=config.analyst_model,
+        messages=messages,
+    )
+    if hasattr(instructor_client.messages, "create_with_completion"):
+        return await instructor_client.messages.create_with_completion(
+            response_model=AnalystReportCard,
+            model=config.analyst_model,
+            max_tokens=config.analyst_max_tokens,
+            messages=messages,
+        )
+    response = await instructor_client.messages.create(
+        response_model=AnalystReportCard,
+        model=config.analyst_model,
+        max_tokens=config.analyst_max_tokens,
+        messages=messages,
+    )
+    raise ValueError(f"Instructor client did not return completion metadata for {holding.tradingsymbol}: {response}")
 
 
 def _map_card_confidence(confidence: str) -> str:
@@ -311,11 +387,14 @@ async def generate_company_artifact(
     holding: Holding,
     price_context: dict[str, float | str],
     skills_content: str,
-    client: AsyncAnthropic,
+    client: AsyncAnthropic | Any,
     config: Settings,
 ) -> CompanyAnalysisArtifact:
     started = time.perf_counter()
     logger.info("[%s] starting analysis", holding.tradingsymbol)
+    instructor_client = _ensure_instructor_client(client, api_key=config.anthropic_api_key)
+    raw_client = _raw_client_for_counting(instructor_client)
+    tools = [get_tavily_search_tool_definition(config)]
 
     user_prompt = (
         f"Analyse this Indian stock using tavily_search and return exactly one valid JSON object only.\n"
@@ -350,18 +429,22 @@ async def generate_company_artifact(
     searches_used = 0
 
     for iteration in range(1, MAX_ANALYST_ITERATIONS + 1):
-        log_estimated_input_tokens(
+        await _log_input_tokens(
             label=f"[{holding.tradingsymbol}]",
-            messages=messages,
-            system=skills_content,
-        )
-        response = await client.messages.create(
+            client=instructor_client,
             model=config.analyst_model,
-            max_tokens=config.analyst_max_tokens,
-            system=skills_content,
             messages=messages,
-            tools=[get_tavily_search_tool_definition(config)],
+            system=skills_content,
+            tools=tools,
         )
+        call_kwargs = {
+            "model": config.analyst_model,
+            "max_tokens": config.analyst_max_tokens,
+            "system": skills_content,
+            "messages": messages,
+            "tools": tools,
+        }
+        response = await raw_client.messages.create(**call_kwargs)
         _log_response_usage(
             label=f"[{holding.tradingsymbol}] analyst",
             model=config.analyst_model,
@@ -376,11 +459,11 @@ async def generate_company_artifact(
         stop_reason = getattr(response, "stop_reason", None)
 
         if stop_reason == "pause_turn":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _serialize_content_blocks(response.content)})
             continue
 
         if stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _serialize_content_blocks(response.content)})
             tool_results, search_increment = _materialize_tool_results(
                 response,
                 config=config,
@@ -392,31 +475,23 @@ async def generate_company_artifact(
             continue
 
         if stop_reason in {"end_turn", "max_tokens"}:
-            raw_text = _extract_text(response)
-            try:
-                payload = _extract_report_card_dict(raw_text)
-                report_card = AnalystReportCard.model_validate(payload)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] invalid analyst JSON on iteration %s/%s: %s",
-                    holding.tradingsymbol,
-                    iteration,
-                    MAX_ANALYST_ITERATIONS,
-                    exc,
-                )
-                if iteration >= MAX_ANALYST_ITERATIONS:
-                    raise
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{JSON_PARSE_REPAIR_PROMPT} Validation error: {exc}. "
-                            "Keep all required keys and enum values exactly as specified."
-                        ),
-                    }
-                )
-                continue
+            report_card, structured_response = await _coerce_report_card_with_instructor(
+                instructor_client=instructor_client,
+                config=config,
+                holding=holding,
+                raw_text=_extract_text(response),
+            )
+            _log_response_usage(
+                label=f"[{holding.tradingsymbol}] analyst_structured",
+                model=config.analyst_model,
+                response=structured_response,
+                settings=config,
+                metadata={
+                    "phase": "analyst_structured",
+                    "ticker": holding.tradingsymbol,
+                    "iteration": iteration,
+                },
+            )
 
             artifact = _build_company_artifact(report_card=report_card, holding=holding, config=config)
             output_path = save_company_analysis_artifact(artifact, settings=config)
@@ -438,7 +513,7 @@ async def analyse_stock(
     portfolio_total_value: float,
     price_context: dict[str, float | str],
     skills_content: str,
-    client: AsyncAnthropic,
+    client: AsyncAnthropic | Any,
     config: Settings,
 ) -> StockVerdict:
     """

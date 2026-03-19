@@ -13,7 +13,10 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from anthropic import AsyncAnthropic
+
 from config import Settings
+from observability.langfuse_client import get_langfuse
 from observability.telemetry import emit_span, start_span
 
 
@@ -156,6 +159,24 @@ def log_estimated_input_tokens(*, label: str, messages: Any, system: Any | None 
     estimate = estimate_input_tokens(messages=messages, system=system)
     logger.info("%s estimated input tokens: ~%s", label, estimate)
     return estimate
+
+
+async def count_input_tokens_exact(
+    *,
+    client: AsyncAnthropic,
+    model: str,
+    messages: list[dict],
+    system: str | None = None,
+    tools: list[dict] | None = None,
+) -> int:
+    """Calls the Anthropic token-counting endpoint. No tokens consumed."""
+    kwargs: dict[str, Any] = {"model": model, "messages": messages}
+    if system:
+        kwargs["system"] = system
+    if tools:
+        kwargs["tools"] = tools
+    result = await client.messages.count_tokens(**kwargs)
+    return result.input_tokens
 
 
 def _summary_record(summary: UsageRunSummary, *, completed_at: datetime) -> dict[str, Any]:
@@ -342,6 +363,33 @@ def record_anthropic_usage(
 
     usage_path = run.usage_path if run else _usage_path_for_today(settings)
     _append_jsonl(usage_path, entry)
+    try:
+        lf = get_langfuse(settings)
+        if lf is not None:
+            usage_payload = {
+                "input": input_tokens,
+                "output": output_tokens,
+                "total": input_tokens + output_tokens,
+            }
+            if hasattr(lf, "generation"):
+                lf.generation(
+                    name=label,
+                    model=model,
+                    input=entry.get("metadata", {}),
+                    usage=usage_payload,
+                    metadata=metadata or {},
+                )
+            else:
+                lf.start_observation(
+                    name=label,
+                    as_type="generation",
+                    model=model,
+                    input=entry.get("metadata", {}),
+                    metadata=metadata or {},
+                    usage_details=usage_payload,
+                )
+    except Exception as exc:
+        logger.warning("Langfuse generation trace failed for %s: %s", label, exc)
 
     if run is not None:
         run.add_entry(entry)

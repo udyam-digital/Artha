@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     analyst_max_searches: int = Field(default=3, alias="ANALYST_MAX_SEARCHES")
     analyst_parallelism: int = Field(default=2, alias="ANALYST_PARALLELISM")
     analyst_min_start_interval_seconds: float = Field(default=3.0, alias="ANALYST_MIN_START_INTERVAL_SECONDS")
+    haiku_input_tpm: int = Field(default=50000, alias="HAIKU_INPUT_TPM")
+    haiku_output_tpm: int = Field(default=10000, alias="HAIKU_OUTPUT_TPM")
     summary_max_tokens: int = Field(default=700, alias="SUMMARY_MAX_TOKENS")
     company_analysis_max_age_days: int = Field(default=7, alias="COMPANY_ANALYSIS_MAX_AGE_DAYS")
     max_tokens: int = Field(default=8096, alias="MAX_TOKENS")

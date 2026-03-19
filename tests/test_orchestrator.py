@@ -20,14 +20,23 @@ pytestmark = pytest.mark.anyio
 class FakeSummaryClient:
     def __init__(self) -> None:
         self.calls = []
+        self.count_calls = []
 
     async def messages_create(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="Portfolio summary")])
+        return SimpleNamespace(
+            stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text="Portfolio summary")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+
+    async def messages_count_tokens(self, **kwargs):
+        self.count_calls.append(kwargs)
+        return SimpleNamespace(input_tokens=222)
 
     @property
     def messages(self):
-        return SimpleNamespace(create=self.messages_create)
+        return SimpleNamespace(create=self.messages_create, count_tokens=self.messages_count_tokens)
 
 
 class FakeKiteClient:
@@ -209,6 +218,7 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     assert "summary" in phase_types
     assert fake_summary_client.calls[0].get("tools") is None
     assert fake_summary_client.calls[0]["model"] == "claude-sonnet-4-6"
+    assert fake_summary_client.count_calls[0]["model"] == "claude-sonnet-4-6"
 
 
 async def test_run_full_analysis_reuses_fresh_company_cache(tmp_path: Path, monkeypatch) -> None:
@@ -410,6 +420,105 @@ async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatc
     assert len(start_times) == 3
     assert start_times[1] - start_times[0] >= 0.045
     assert start_times[2] - start_times[1] >= 0.045
+
+
+async def test_build_portfolio_summary_falls_back_when_exact_count_fails(tmp_path: Path, monkeypatch, caplog) -> None:
+    settings = make_settings(tmp_path)
+    client = FakeSummaryClient()
+
+    async def broken_count_tokens(**kwargs):
+        raise RuntimeError("count failed")
+
+    monkeypatch.setattr(client, "messages_count_tokens", broken_count_tokens)
+
+    with caplog.at_level("WARNING"):
+        summary = await orchestrator._build_portfolio_summary(
+            client=client,  # type: ignore[arg-type]
+            settings=settings,
+            verdicts=[],
+            snapshot=PortfolioSnapshot(
+                fetched_at="2026-03-18T10:00:00Z",
+                total_value=1_000.0,
+                available_cash=0.0,
+                holdings=[],
+            ),
+            mf_symbols=[],
+            errors=[],
+        )
+
+    assert summary == "Portfolio summary"
+    assert "exact token counting failed" in caplog.text
+
+
+async def test_run_full_analysis_uses_token_budget_manager(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    budget_calls = []
+
+    class FakeBudgetManager:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def acquire(self, *, estimated_input_tokens: int, estimated_output_tokens: int) -> None:
+            budget_calls.append((estimated_input_tokens, estimated_output_tokens))
+
+        def record_actual(self, *, input_tokens: int, output_tokens: int) -> None:
+            return None
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="KPITTECH",
+                company_name="KPITTECH",
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Valuation is rich.",
+                what_to_watch="Volumes",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "TokenBudgetManager", FakeBudgetManager)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    await orchestrator.run_full_analysis(settings)
+    assert budget_calls == [(4000, 1500)]
 
 
 async def test_run_full_analysis_continues_when_price_history_is_missing(tmp_path: Path, monkeypatch) -> None:

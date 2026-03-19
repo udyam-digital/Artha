@@ -104,11 +104,15 @@ def test_analyst_runtime_controls_parse() -> None:
         ANALYST_MAX_SEARCHES=3,
         ANALYST_PARALLELISM=2,
         ANALYST_MIN_START_INTERVAL_SECONDS=12.5,
+        HAIKU_INPUT_TPM=42000,
+        HAIKU_OUTPUT_TPM=9000,
     )
     assert settings.tavily_api_key == "tvly-test"
     assert settings.analyst_max_searches == 3
     assert settings.analyst_parallelism == 2
     assert settings.analyst_min_start_interval_seconds == 12.5
+    assert settings.haiku_input_tpm == 42000
+    assert settings.haiku_output_tpm == 9000
 
 
 def test_none_inputs_are_normalized() -> None:

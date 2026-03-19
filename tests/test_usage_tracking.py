@@ -9,6 +9,7 @@ import pytest
 from config import Settings
 import observability.usage as usage_tracking
 from observability.usage import (
+    count_input_tokens_exact,
     estimate_input_tokens,
     format_run_summary,
     format_usage_summary,
@@ -163,6 +164,30 @@ def test_estimated_input_tokens_helpers(tmp_path: Path, caplog) -> None:
     assert "[KPITTECH] estimated input tokens" in caplog.text
 
 
+@pytest.mark.anyio
+async def test_count_input_tokens_exact_calls_anthropic_counter() -> None:
+    calls = []
+
+    class FakeMessages:
+        async def count_tokens(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(input_tokens=123)
+
+    client = SimpleNamespace(messages=FakeMessages())
+    result = await count_input_tokens_exact(
+        client=client,  # type: ignore[arg-type]
+        model="claude-haiku-4-5",
+        messages=[{"role": "user", "content": "hello"}],
+        system="system",
+        tools=[{"name": "tavily_search"}],
+    )
+
+    assert result == 123
+    assert calls[0]["model"] == "claude-haiku-4-5"
+    assert calls[0]["system"] == "system"
+    assert calls[0]["tools"] == [{"name": "tavily_search"}]
+
+
 def test_formatters_and_recent_summary_loading(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     response = SimpleNamespace(
@@ -233,6 +258,45 @@ def test_record_run_error_marks_summary_failed_and_writes_error_log(tmp_path: Pa
     summary_payload = json.loads(summary.summary_path.read_text(encoding="utf-8").splitlines()[0])
     assert summary_payload["status"] == "failed"
     assert summary_payload["failed_phase"] == "analyst"
+
+
+def test_record_anthropic_usage_skips_langfuse_when_unconfigured(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    response = SimpleNamespace(usage=SimpleNamespace(input_tokens=10, output_tokens=5))
+    monkeypatch.setattr(usage_tracking, "get_langfuse", lambda settings: None)
+
+    entry = record_anthropic_usage(
+        settings=settings,
+        label="portfolio_summary",
+        model="claude-sonnet-4-6",
+        response=response,
+        metadata={"phase": "portfolio_summary"},
+    )
+
+    assert entry is not None
+
+
+def test_record_anthropic_usage_swallows_langfuse_errors(tmp_path: Path, monkeypatch, caplog) -> None:
+    settings = make_settings(tmp_path)
+    response = SimpleNamespace(usage=SimpleNamespace(input_tokens=10, output_tokens=5))
+
+    class BrokenLangfuse:
+        def start_observation(self, **kwargs) -> None:
+            raise RuntimeError("langfuse down")
+
+    monkeypatch.setattr(usage_tracking, "get_langfuse", lambda settings: BrokenLangfuse())
+
+    with caplog.at_level("WARNING"):
+        entry = record_anthropic_usage(
+            settings=settings,
+            label="portfolio_summary",
+            model="claude-sonnet-4-6",
+            response=response,
+            metadata={"phase": "portfolio_summary"},
+        )
+
+    assert entry is not None
+    assert "Langfuse generation trace failed" in caplog.text
 
 
 def test_usage_run_preserves_exception_state_and_resets_context_on_summary_failure(

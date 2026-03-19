@@ -46,6 +46,8 @@ ANALYST_MAX_TOKENS=2500
 ANALYST_MAX_SEARCHES=3
 ANALYST_PARALLELISM=2
 ANALYST_MIN_START_INTERVAL_SECONDS=3
+HAIKU_INPUT_TPM=50000
+HAIKU_OUTPUT_TPM=10000
 SUMMARY_MAX_TOKENS=700
 COMPANY_ANALYSIS_MAX_AGE_DAYS=7
 TRANSIENT_RETRY_ATTEMPTS=3
@@ -56,6 +58,7 @@ TELEMETRY_ENVIRONMENT=development
 TELEMETRY_ENABLED=true
 OTEL_EXPORTER_OTLP_ENDPOINT=
 OTEL_EXPORTER_OTLP_HEADERS={}
+# Optional: get keys at langfuse.com
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
@@ -119,7 +122,7 @@ LLM cost logging:
 - every run also appends one summary row to `reports/usage/run_summaries.jsonl` with total cost, total calls, phase/model breakdowns, and the daily usage log path
 - failed full runs also append one row to `reports/usage/run_errors.jsonl` with failed phase, ticker when available, retry count used, and error details
 - the CLI prints a per-run estimated LLM cost summary and the JSONL path after completion
-- before each Anthropic call, Artha logs a rough estimated input-token count so prompt blowups are visible immediately
+- before each analyst and portfolio-summary Anthropic call, Artha tries Anthropic's exact zero-cost token counter first and falls back to a rough estimate if the counter is unavailable
 
 Observability and tracing:
 
@@ -136,7 +139,7 @@ Observability and tracing:
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch one compact price-history summary once per analyzable equity holding: `52w_high`, `52w_low`, `current_vs_52w_high_pct`, `price_1y_ago`, `price_change_1y_pct`
 4. Check `data/kite/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
-5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and Tavily-backed `tavily_search`, using a compact analyst input payload plus staggered starts to stay within provider TPM limits
+5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and Tavily-backed `tavily_search`, using Instructor-enforced structured output plus compact analyst input payloads, staggered starts, and a sliding token budget to stay within provider TPM limits
 6. Convert each cached or refreshed company artifact into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
 8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary

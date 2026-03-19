@@ -15,7 +15,13 @@ from analysis.company import get_company_artifact_and_verdict, is_company_artifa
 from config import Settings
 from kite.runtime import KiteSyncResult, build_kite_client, sync_kite_data, sync_kite_data_with_client
 from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
-from observability.usage import log_estimated_input_tokens, record_anthropic_usage, record_run_error
+from observability.token_budget import TokenBudgetManager
+from observability.usage import (
+    count_input_tokens_exact,
+    log_estimated_input_tokens,
+    record_anthropic_usage,
+    record_run_error,
+)
 from persistence.store import company_analysis_path, load_company_analysis_artifact
 from reliability import FullRunFailed, RetryFailure, run_with_retries
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
@@ -48,6 +54,25 @@ RunEventCallback = Callable[[RunEvent], None]
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _log_portfolio_summary_input_tokens(
+    *,
+    client: AsyncAnthropic,
+    settings: Settings,
+    messages: list[dict[str, str]],
+) -> None:
+    try:
+        exact = await count_input_tokens_exact(
+            client=client,
+            model=settings.model,
+            messages=messages,
+        )
+    except Exception as exc:
+        logger.warning("[portfolio_summary] exact token counting failed; falling back to estimate: %s", exc)
+        log_estimated_input_tokens(label="[portfolio_summary]", messages=messages)
+        return
+    logger.info("[portfolio_summary] exact input tokens: %s", exact)
 
 
 def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> tuple[PortfolioReport, list[RebalancingAction]]:
@@ -227,7 +252,7 @@ async def _build_portfolio_summary(
             ),
         }
     ]
-    log_estimated_input_tokens(label="[portfolio_summary]", messages=messages)
+    await _log_portfolio_summary_input_tokens(client=client, settings=settings, messages=messages)
     response = await client.messages.create(
         model=settings.model,
         max_tokens=min(settings.max_tokens, settings.summary_max_tokens),
@@ -272,6 +297,10 @@ async def run_full_analysis(
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     skills_content = _load_analyst_prompt()
     price_context_by_symbol: dict[str, dict[str, float | str]] = {}
+    budget = TokenBudgetManager(
+        input_tokens_per_minute=settings.haiku_input_tpm,
+        output_tokens_per_minute=settings.haiku_output_tpm,
+    )
 
     if event_callback is not None and sync_result is None:
         event_callback({"type": "phase", "phase": "kite_sync", "label": "Syncing live portfolio from Kite…", "total": 0})
@@ -339,6 +368,7 @@ async def run_full_analysis(
         if stagger_seconds > 0:
             await asyncio.sleep(index * stagger_seconds)
         async with semaphore:
+            await budget.acquire(estimated_input_tokens=4000, estimated_output_tokens=1500)
             _, verdict, from_cache = await run_with_retries(
                 lambda: get_company_artifact_and_verdict(
                     holding=holding,
