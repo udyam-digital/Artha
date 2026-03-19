@@ -103,6 +103,8 @@ def create_app() -> FastAPI:
     @app.post("/api/run")
     async def run_artha(request: RunRequest) -> StreamingResponse:
         settings = get_settings()
+        async with build_kite_client(settings) as kite_client:
+            await _ensure_authenticated(kite_client, settings)
         return StreamingResponse(
             _stream_run(request, settings),
             media_type="text/event-stream",

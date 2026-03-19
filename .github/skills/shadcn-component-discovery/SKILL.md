@@ -65,7 +65,7 @@ Before searching, clarify:
 ```
 
 **Without MCP:**
-- Consult [.github/skills/shadcn-component-discovery/references/registries.md](.github/skills/shadcn-component-discovery/references/registries.md) for registry recommendations
+- Consult [references/registries.md](references/registries.md) for registry recommendations
 - Provide links to browse manually
 - Suggest adding shadcn MCP for full search capabilities
 
@@ -215,7 +215,7 @@ Quick reference for which registries to prioritize:
 | AI/Chat interfaces | AI Elements, assistant-ui |
 | Accessibility | @diceui, JollyUI |
 
-See [.github/skills/shadcn-component-discovery/references/registries.md](.github/skills/shadcn-component-discovery/references/registries.md) for complete catalog.
+See [references/registries.md](references/registries.md) for the complete catalog.
 
 ## Response Requirements
 
@@ -315,7 +315,7 @@ Want me to check any specific registries first, or proceed with custom build?
 
 ## Resources
 
-- **Registry Catalog:** [.github/skills/shadcn-component-discovery/references/registries.md](.github/skills/shadcn-component-discovery/references/registries.md)
+- **Registry Catalog:** [references/registries.md](./references/registries.md)
 - **Registry Browser:** [registry.directory](https://registry.directory)
 - **Official Blocks:** [ui.shadcn.com/blocks](https://ui.shadcn.com/blocks)
 - **Component Index:** [shadcnregistry.com](https://shadcnregistry.com)
