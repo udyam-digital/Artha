@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 import api.main as api_main
 from config import Settings
 from models import Holding, MFSnapshot, MFHolding, PortfolioReport, PortfolioSnapshot, StockVerdict, Verdict
+from reliability import FullRunFailed
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -251,3 +253,130 @@ def test_holdings_without_cache_still_requires_login(monkeypatch, tmp_path: Path
 
     assert response.status_code == 401
     assert response.json()["detail"]["login_url"] == "https://kite.example/login"
+
+
+def _parse_sse_stream(raw: bytes) -> list[dict]:
+    """Parse raw SSE bytes into a list of {event, data} dicts."""
+    events = []
+    current: dict = {}
+    for line in raw.decode("utf-8").splitlines():
+        if line.startswith("event:"):
+            current["event"] = line.removeprefix("event:").strip()
+        elif line.startswith("data:"):
+            current["data"] = json.loads(line.removeprefix("data:").strip())
+        elif line == "" and current:
+            events.append(current)
+            current = {}
+    if current:
+        events.append(current)
+    return events
+
+
+def test_run_endpoint_streams_structured_sse_events(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    report = make_report()
+
+    class FakeKiteClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_profile(_kite_client):
+        return {"user_name": "ok"}
+
+    async def fake_run_full_analysis(s, event_callback=None, sync_result=None):
+        if event_callback:
+            event_callback({"type": "phase", "phase": "kite_sync", "label": "Syncing…", "total": 0})
+            event_callback({"type": "phase", "phase": "analyst", "label": "Analysing 1 holding(s)…", "total": 1})
+            event_callback({
+                "type": "analyst_complete",
+                "completed": 1,
+                "total": 1,
+                "ticker": "KPITTECH",
+                "verdict": "BUY",
+                "confidence": "HIGH",
+                "thesis_intact": True,
+                "pnl_pct": 10.0,
+                "duration_seconds": 5.0,
+                "bull_case": "Demand is healthy.",
+                "red_flags": [],
+            })
+            event_callback({"type": "phase", "phase": "rebalance", "label": "Rebalancing…", "total": 0})
+            event_callback({"type": "phase", "phase": "summary", "label": "Summarising…", "total": 0})
+        return report
+
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "build_kite_client", lambda s: FakeKiteClient())
+    monkeypatch.setattr(api_main, "kite_get_profile", fake_profile)
+    monkeypatch.setattr(api_main, "run_full_analysis", fake_run_full_analysis)
+
+    client = TestClient(api_main.create_app())
+    response = client.post("/api/run", json={"rebalance_only": False})
+
+    assert response.status_code == 200
+    events = _parse_sse_stream(response.content)
+    event_names = [e["event"] for e in events]
+
+    assert "status" in event_names
+    assert "phase" in event_names
+    assert "progress" in event_names
+    assert "complete" in event_names
+
+    phase_events = [e for e in events if e["event"] == "phase"]
+    assert phase_events[0]["data"]["phase"] == "kite_sync"
+    assert phase_events[1]["data"]["phase"] == "analyst"
+    assert phase_events[1]["data"]["total"] == 1
+
+    progress_events = [e for e in events if e["event"] == "progress"]
+    assert len(progress_events) == 1
+    p = progress_events[0]["data"]
+    assert p["ticker"] == "KPITTECH"
+    assert p["verdict"] == "BUY"
+    assert p["confidence"] == "HIGH"
+    assert p["thesis_intact"] is True
+    assert p["red_flags"] == []
+    assert "bull_case" in p
+
+    complete_events = [e for e in events if e["event"] == "complete"]
+    assert len(complete_events) == 1
+    assert complete_events[0]["data"]["report_id"] is not None
+
+
+def test_run_endpoint_emits_error_event_on_full_run_failed(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+
+    class FakeKiteClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_profile(_kite_client):
+        return {"user_name": "ok"}
+
+    async def fake_run_full_analysis(s, event_callback=None, sync_result=None):
+        raise FullRunFailed(
+            phase="analyst",
+            message="analyst timed out",
+            retries_used=3,
+            ticker="KPITTECH",
+            error_log_path=tmp_path / "err.json",
+        )
+
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "build_kite_client", lambda s: FakeKiteClient())
+    monkeypatch.setattr(api_main, "kite_get_profile", fake_profile)
+    monkeypatch.setattr(api_main, "run_full_analysis", fake_run_full_analysis)
+
+    client = TestClient(api_main.create_app())
+    response = client.post("/api/run", json={"rebalance_only": False})
+
+    assert response.status_code == 200
+    events = _parse_sse_stream(response.content)
+    error_events = [e for e in events if e["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["data"]["phase"] == "analyst"
+    assert "analyst timed out" in error_events[0]["data"]["message"]

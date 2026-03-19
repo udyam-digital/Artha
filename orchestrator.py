@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal, TypedDict
 
 from anthropic import AsyncAnthropic
 
@@ -21,7 +22,55 @@ from tools import ToolExecutionError, kite_get_price_history
 from usage_tracking import log_estimated_input_tokens, record_anthropic_usage, record_run_error
 
 
+class PhaseEvent(TypedDict):
+    type: Literal["phase"]
+    phase: str  # "kite_sync" | "analyst" | "rebalance" | "summary"
+    label: str
+    total: int  # 0 except for "analyst" which carries the holding count
+
+
+class AnalystCompleteEvent(TypedDict):
+    type: Literal["analyst_complete"]
+    completed: int
+    total: int
+    ticker: str
+    verdict: str
+    confidence: str
+    thesis_intact: bool
+    pnl_pct: float
+    duration_seconds: float
+    bull_case: str
+    red_flags: list[str]
+
+
+RunEvent = PhaseEvent | AnalystCompleteEvent
+RunEventCallback = Callable[[RunEvent], None]
+
+
 logger = logging.getLogger(__name__)
+
+
+def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> tuple[PortfolioReport, list[RebalancingAction]]:
+    actions = calculate_rebalancing_actions(
+        holdings=snapshot.holdings,
+        total_value=snapshot.total_value,
+        available_cash=snapshot.available_cash,
+    )
+    summary = (
+        "This is a rebalance-only run using live holdings and current market values. "
+        "Fundamental analysis was skipped, so actions are based only on drift versus target weights. "
+        "Review tax context and thesis quality before acting on any sell recommendation."
+    )
+    report = PortfolioReport(
+        generated_at=datetime.now(timezone.utc),
+        portfolio_snapshot=snapshot,
+        verdicts=[],
+        portfolio_summary=summary,
+        total_buy_required=sum(action.rupee_amount for action in actions if action.action == "BUY"),
+        total_sell_required=sum(action.rupee_amount for action in actions if action.action == "SELL"),
+        errors=[],
+    )
+    return report, actions
 
 
 def _load_analyst_prompt() -> str:
@@ -204,7 +253,7 @@ async def _build_portfolio_summary(
 
 async def run_full_analysis(
     settings: Settings,
-    progress_callback: Callable[[int, int, StockVerdict], None] | None = None,
+    event_callback: RunEventCallback | None = None,
     sync_result: KiteSyncResult | None = None,
 ) -> PortfolioReport:
     """
@@ -221,6 +270,9 @@ async def run_full_analysis(
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     skills_content = _load_analyst_prompt()
     price_context_by_symbol: dict[str, dict[str, float | str]] = {}
+
+    if event_callback is not None and sync_result is None:
+        event_callback({"type": "phase", "phase": "kite_sync", "label": "Syncing live portfolio from Kite…", "total": 0})
 
     try:
         if sync_result is None:
@@ -300,6 +352,14 @@ async def run_full_analysis(
         for index, holding in enumerate(equity_holdings)
     }
 
+    if event_callback is not None:
+        event_callback({
+            "type": "phase",
+            "phase": "analyst",
+            "label": f"Analysing {len(task_to_symbol)} holding(s)…",
+            "total": len(task_to_symbol),
+        })
+
     ordered_verdicts: dict[str, StockVerdict] = {}
     completed = 0
     total = len(task_to_symbol)
@@ -325,10 +385,25 @@ async def run_full_analysis(
             ) from exc
         completed += 1
         ordered_verdicts[verdict.tradingsymbol] = verdict
-        if progress_callback is not None:
-            progress_callback(completed, total, verdict)
+        if event_callback is not None:
+            event_callback({
+                "type": "analyst_complete",
+                "completed": completed,
+                "total": total,
+                "ticker": verdict.tradingsymbol,
+                "verdict": verdict.verdict.value,
+                "confidence": verdict.confidence,
+                "thesis_intact": verdict.thesis_intact,
+                "pnl_pct": verdict.pnl_pct,
+                "duration_seconds": verdict.analysis_duration_seconds,
+                "bull_case": verdict.bull_case,
+                "red_flags": verdict.red_flags,
+            })
 
     verdicts = [ordered_verdicts[holding.tradingsymbol] for holding in equity_holdings if holding.tradingsymbol in ordered_verdicts]
+
+    if event_callback is not None:
+        event_callback({"type": "phase", "phase": "rebalance", "label": "Computing rebalancing actions…", "total": 0})
 
     math_actions = calculate_rebalancing_actions(
         holdings=equity_holdings,
@@ -361,6 +436,9 @@ async def run_full_analysis(
     for verdict in verdicts:
         _merge_action_into_verdict(verdict, action_by_symbol.get(verdict.tradingsymbol))
         final_actions[verdict.tradingsymbol] = _verdict_to_action(verdict, holding_by_symbol[verdict.tradingsymbol])
+
+    if event_callback is not None:
+        event_callback({"type": "phase", "phase": "summary", "label": "Building portfolio summary…", "total": 0})
 
     try:
         portfolio_summary = await run_with_retries(

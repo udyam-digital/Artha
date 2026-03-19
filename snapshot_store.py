@@ -8,7 +8,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from config import Settings, get_settings
-from models import CompanyAnalysisArtifact, MFSnapshot, PortfolioSnapshot, ResearchDigest
+from models import CompanyAnalysisArtifact, MFSnapshot, PortfolioReport, PortfolioSnapshot, ResearchDigest
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -96,6 +96,14 @@ def save_research_digest(
         index_path,
     )
     return digest_path, per_holding_paths, index_path
+
+
+def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    filename = report.generated_at.strftime("%Y%m%d_%H%M%S_artha_report.json")
+    output_path = reports_dir / filename
+    output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    return output_path
 
 
 def company_analysis_path(ticker: str, settings: Settings | None = None) -> Path:

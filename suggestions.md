@@ -1,198 +1,153 @@
-# Suggestions for Artha - Expert Gen AI Architecture Recommendations
+# Suggestions for Artha
 
-## Overview
-As an expert Generative AI Architect specializing in financial analysis systems and MCP-integrated applications, I've analyzed the Artha portfolio research agent and provide the following strategic recommendations to enhance its AI capabilities, reliability, and scalability.
+This file tracks practical improvement recommendations for Artha from a senior GenAI architect perspective. The emphasis is on auditability, regression resistance, conservative financial behavior, and keeping repository guidance aligned with the actual codebase.
 
-## 1. Evaluation-Driven Development Implementation
-**Priority: High** | **Skill: eval-driven-dev**
+## Highest Priority
 
-Implement comprehensive evaluation pipelines for the AI analysis components:
-- Create golden datasets of historical portfolio scenarios with known optimal rebalancing decisions
-- Instrument all LLM calls (Anthropic Sonnet/Haiku) with structured evaluation metrics
-- Build automated regression testing for analyst verdict quality and portfolio recommendations
-- Implement confidence scoring validation to prevent overconfident but incorrect analyses
-- Add A/B testing framework for comparing different model configurations
+### 1. Add eval-driven quality gates for report behavior
 
-**Expected Impact**: 40% reduction in analysis errors, improved confidence calibration, and systematic quality assurance.
+Relevant skills: `eval-driven-dev`, `agentic-eval`, `pytest-coverage`
 
-## 2. Multi-Layer Verification System
-**Priority: High** | **Skill: doublecheck**
+Artha has broad unit coverage, but it still lacks a durable evaluation layer for the LLM-facing parts of the system. Add a `pixie_qa/` or equivalent eval folder with:
 
-Deploy the three-layer verification pipeline for critical financial outputs:
-- **Layer 1**: Extract verifiable claims from portfolio reports (price targets, P&L calculations, risk assessments)
-- **Layer 2**: Cross-reference claims against multiple data sources (Kite API, web search, historical data)
-- **Layer 3**: Adversarial review for hallucination patterns specific to financial analysis
-- Generate structured verification reports for each portfolio run
-- Implement human-in-the-loop validation for high-stakes recommendations
+- saved portfolio snapshots and company-analysis fixtures
+- expected output envelopes for `PortfolioReport`
+- regression checks for verdict distribution, rebalance reasoning, and error fallback behavior
+- prompt-change tests that fail when reports drift outside acceptable bounds
 
-**Expected Impact**: Near-zero hallucination rate in financial recommendations, enhanced trust in AI outputs.
+This should become the main guardrail for changes to prompts, tool schemas, orchestration, and parsing.
 
-## 3. MCP Server Ecosystem Expansion
-**Priority: Medium** | **Skill: python-mcp-server-generator**
+### 2. Add deterministic verification for financial claims
 
-Extend the MCP integration beyond Kite:
-- **Financial Data Aggregation**: Create MCP servers for NSE/BSE APIs, mutual fund data, economic indicators
-- **Risk Analysis Tools**: Build specialized MCP servers for VaR calculations, stress testing, correlation analysis
-- **News Sentiment Analysis**: Develop MCP server for real-time financial news processing and sentiment scoring
-- **Portfolio Optimization**: Implement advanced optimization algorithms as MCP tools (Markowitz, Black-Litterman)
-- **Compliance Checking**: Add regulatory compliance validation MCP servers
+Relevant skill: `doublecheck`
 
-**Expected Impact**: Richer data sources, more sophisticated analysis capabilities, modular architecture.
+The system makes high-stakes financial-analysis statements. Before presenting or persisting final summaries, introduce a verification layer for:
 
-## 4. Advanced Testing and Quality Assurance
-**Priority: High** | **Skill: pytest-coverage**
+- price-derived calculations
+- position weights and rebalance math
+- source freshness
+- unsupported claims in the free-text summary
 
-Achieve 100% test coverage with intelligent testing strategies:
-- Unit tests for all financial calculations and verdict logic
-- Integration tests for MCP server interactions
-- End-to-end tests for complete portfolio analysis workflows
-- Property-based testing for mathematical invariants (portfolio totals, P&L calculations)
-- Mock-based testing for external API dependencies
-- Performance regression testing for analysis pipeline speed
+The point is not to make the prose prettier; it is to reduce incorrect factual or numeric statements in a production-adjacent finance workflow.
 
-**Expected Impact**: Production-grade reliability, faster iteration cycles, confidence in deployments.
+### 3. Fix the repo automation gap
 
-## 5. GitHub Workflow Optimization
-**Priority: Medium** | **Skill: gh-cli, conventional-commit, dependabot**
+Relevant skills: `dependabot`, `codeql`, `secret-scanning`, `gh-cli`
 
-Streamline development and deployment processes:
-- Implement conventional commit standards for better changelog generation
-- Set up automated dependency updates with Dependabot for security and feature updates
-- Create GitHub Actions workflows for automated testing, linting, and deployment
-- Implement PR templates and automated code review checklists
-- Set up release automation with semantic versioning
+The repository currently has `.github/skills/` but no visible GitHub Actions workflows, no Dependabot config, no CodeQL config, and no repo-local custom instructions or agents. The next practical additions are:
 
-**Expected Impact**: Improved development velocity, better collaboration, automated maintenance.
+- `/.github/workflows/ci.yml` for pytest, coverage, and basic static checks
+- `/.github/dependabot.yml`
+- `/.github/workflows/codeql.yml`
+- repository secret-scanning and push-protection setup guidance
 
-## 6. SQL Optimization for Data Layer
-**Priority: Low** | **Skill: sql-optimization**
+This will do more for long-term quality than adding more prompt text.
 
-Optimize data persistence and querying (if SQL databases are introduced):
-- Design efficient schemas for portfolio snapshots and company analysis artifacts
-- Implement proper indexing strategies for time-series financial data
-- Optimize queries for real-time portfolio calculations
-- Set up database connection pooling and query result caching
-- Implement database migration strategies for schema evolution
+## Medium Priority
 
-**Expected Impact**: Improved performance for large portfolios, better scalability.
+### 4. Move API report listing off full-file reparsing
 
-## 7. Documentation Excellence
-**Priority: Medium** | **Skill: create-readme**
+Relevant files: `api/main.py`, `snapshot_store.py`
 
-Enhance documentation quality and completeness:
-- Generate comprehensive API documentation for MCP server interfaces
-- Create user guides for different stakeholder types (traders, analysts, developers)
-- Document the AI decision-making process and confidence scoring
-- Add troubleshooting guides for common issues
-- Create architecture decision records (ADRs) for major design choices
+`GET /api/reports` currently rebuilds summary metadata by opening and validating each report file. Add a sidecar index such as `reports/index.json` or an append-only report ledger so the dashboard can load histories without reparsing the full corpus on every request.
 
-**Expected Impact**: Better user adoption, easier maintenance, improved developer experience.
+### 5. Make run progress a structured interface
 
-## 8. Advanced AI Architecture Patterns
+Relevant files: `main.py`, `orchestrator.py`, `api/main.py`
 
-### Model Routing Optimization
-Implement intelligent model routing based on task complexity:
-- Use lightweight models (Haiku) for routine company analysis
-- Reserve heavyweight models (Sonnet) for complex portfolio synthesis
-- Implement model fallback strategies for API failures
-- Add model performance monitoring and automatic routing adjustments
+The API streams CLI output and parses progress from console text. Replace that with structured progress events emitted by the orchestrator so the FastAPI layer can stream typed states instead of depending on terminal formatting.
 
-### Context Window Management
-Optimize token usage and context efficiency:
-- Implement intelligent context compression for long-term portfolio history
-- Use retrieval-augmented generation for accessing historical analyses
-- Implement context-aware summarization to fit within model limits
-- Add context relevance scoring to prioritize important information
+### 6. Improve auth/session reliability around Kite MCP
 
-### Streaming and Real-time Updates
-Enable real-time portfolio monitoring:
-- Implement streaming responses for live market data integration
-- Add WebSocket connections for real-time price updates
-- Create incremental analysis updates as new data arrives
-- Implement progressive disclosure of analysis results
+Relevant files: `main.py`, `kite_runtime.py`, `tools.py`
 
-## 9. Security and Compliance Enhancements
+There is still a risk boundary between authenticating one session and running analysis through another. Tighten session reuse or make the handoff explicit so `kite-login` and `run` do not behave like loosely coupled flows.
 
-### Financial Data Security
-- Implement end-to-end encryption for sensitive portfolio data
-- Add audit trails for all AI decisions and recommendations
-- Implement role-based access control for different user types
-- Add data anonymization for analysis sharing
+### 7. Make cached analysis refresh more event-aware
 
-### Regulatory Compliance
-- Implement SEBI compliance checking for Indian market regulations
-- Add risk disclosure requirements in all recommendations
-- Create audit reports for regulatory submissions
-- Implement data retention policies compliant with financial regulations
+Relevant files: `analyst.py`, `orchestrator.py`, `config.py`
 
-## 10. Performance and Scalability
+The current cache TTL is time-based. Consider invalidating company artifacts earlier when:
 
-### Horizontal Scaling
-- Implement distributed processing for large portfolio analysis
-- Add caching layers for frequently accessed financial data
-- Implement queue-based processing for batch analysis jobs
-- Add load balancing for multiple concurrent users
+- earnings dates pass
+- large price moves occur
+- new filings arrive
+- source URLs have gone stale
 
-### Cost Optimization
-- Implement intelligent caching to reduce API calls
-- Add usage monitoring and cost prediction
-- Optimize model selection based on cost-benefit analysis
-- Implement data compression for storage efficiency
+Time-only freshness is simple, but it is not enough for a finance workflow.
 
-## Implementation Roadmap
+## Lower Priority
 
-**Phase 1 (Weeks 1-2)**: Implement eval-driven-dev and doublecheck for core analysis pipeline
-**Phase 2 (Weeks 3-4)**: Add comprehensive testing with pytest-coverage and GitHub workflow optimization
-**Phase 3 (Weeks 5-6)**: Expand MCP ecosystem and implement advanced AI patterns
-**Phase 4 (Weeks 7-8)**: Focus on security, compliance, and performance optimization
+### 8. Formalize the MF API contract
 
-## New UI/API Follow-Ups
+Relevant files: `api/main.py`, `models.py`
 
-### 1. Persist report metadata for faster `/api/reports`
-- The new FastAPI layer currently computes report summaries by reading and validating each JSON report file on demand.
-- Add a lightweight `reports/index.json` sidecar or append-only metadata ledger so the dashboard can list large report histories without reparsing every file.
+The holdings endpoint currently mixes equity holdings with the latest saved MF snapshot. A dedicated `/api/mf-holdings` endpoint or a shared typed response contract would make the frontend boundary cleaner.
 
-### 2. Promote structured SSE progress from CLI to orchestrator
-- The dashboard currently consumes streamed stdout and parsed progress lines from `main.py run`.
-- A cleaner next step is to move progress events into a structured emitter in the orchestrator so the API can stream typed analyst states without depending on console formatting.
+### 9. Add better run manifests and evidence logs
 
-### 3. Add a dedicated MF API contract
-- The holdings API currently returns live equity holdings plus the latest saved MF snapshot as an extended response.
-- Formalize this into an explicit shared model or a dedicated `/api/mf-holdings` endpoint so the frontend contract is clearer and less coupled to a dashboard-specific extension.
+Relevant files: `snapshot_store.py`, `usage_tracking.py`, `models.py`
 
-## Success Metrics
+Persist a per-run manifest with:
 
-- **Quality**: <5% error rate in financial recommendations
-- **Performance**: <30 second analysis time for typical portfolios
-- **Reliability**: 99.9% uptime for analysis pipeline
-- **Cost**: <$0.10 per portfolio analysis
-- **User Satisfaction**: >95% user acceptance of AI recommendations
+- snapshot paths used
+- analyst inputs and elapsed times
+- price-history payload versions
+- verdict counts and failure reasons
 
-These recommendations position Artha as a world-class AI-powered portfolio analysis platform, combining cutting-edge generative AI capabilities with robust financial analysis practices.
+Also consider an evidence trail per verdict rather than just final source URLs.
 
-## Legacy Suggestions (Pre-Skills Integration)
+### 10. Factor service-layer modules more explicitly
 
-### Architecture
-- Factor the live portfolio pipeline into a `services/` package next. `orchestrator.py`, `analyst.py`, `research.py`, and `kite_runtime.py` now form a clear application-service layer and will become easier to evolve if they share a package boundary.
-- Introduce a small `HoldingContext` model for orchestrator-to-analyst handoff. That will make the boundary explicit for 52-week context, target-weight drift, and future additions like holding period or thesis notes.
-- Add a dedicated `rebalance_merge.py` helper if verdict-to-action policy becomes more nuanced. The current merge logic is still compact, but it is now a business rule layer rather than a pure formatting concern.
-- Keep model routing explicit by role. The current `MODEL` plus `ANALYST_MODEL` split is the right pattern; if research costs stay high, add a separate `RESEARCH_MODEL` instead of overloading one global model knob.
-- Consider an event-aware refresh policy on top of the 7-day cache. Earnings dates, exchange filings, and large price moves should be able to invalidate a company artifact earlier than the pure time-based TTL.
+Relevant files: `orchestrator.py`, `analyst.py`, `research.py`, `kite_runtime.py`
 
-### Reliability
-- Add adaptive rate limiting around Anthropic analyst calls in addition to the existing retries. The repo now has bounded transient retries and persistent failure logs; the next improvement is dynamic TPM-aware pacing or prompt-size reduction so long full runs do not serialize more than necessary.
-- Fix the hosted Kite MCP session-bound auth mismatch. `kite-login` can authenticate one MCP session while `run` opens another, so the next reliability improvement is session reuse or a clearer auth handoff for full runs.
-- Persist a run manifest per portfolio analysis that captures the synced snapshot paths, per-holding price-context payloads, elapsed time, and final verdict count. That will materially improve auditability.
-- Cache recent price-history context and recent analyst verdicts for a short TTL. That will reduce redundant Kite and Anthropic load during repeated runs on the same day.
+These files already form a service layer. If the codebase grows, move them under a dedicated package boundary so orchestration, tool execution, and persistence responsibilities stay clear.
 
-### Observability
-- Emit one structured log event per analyst completion with symbol, duration, verdict, confidence, action, and error state. That will make the parallel run easy to inspect in production-like environments.
-- Track orchestrator-level counters for analyzed equities, excluded ETFs, MF holdings, analyst failures, and total synthesis time.
-- Add a lightweight timing breakdown to the saved report payload or sidecar artifact so portfolio sync, price-context fetch, analyst fan-out, and final synthesis can be compared over time.
-- Per-call Anthropic usage now belongs in a JSONL ledger. Keep building on that by adding a tiny rollup script or notebook that groups cost by command, ticker, model, and prompt phase so optimization work is driven by real spend, not intuition.
-- Rename or extend the legacy `web_search_requests` usage fields now that Tavily backs research. The current ledger still accurately captures Anthropic token cost, but it no longer reflects external search volume or Tavily spend, so the next observability improvement is a provider-agnostic search metric plus Tavily request accounting.
+## Copilot Improvements
 
-### Research Quality
-- Add source-domain ranking for analyst sub-agents so exchange filings, investor presentations, earnings releases, and Screener evidence are preferred over generic market-news summaries.
-- Persist an evidence log per `StockVerdict`, not just the final source URLs. A short structured trail of what changed the verdict will make recommendation drift much easier to audit.
-- Add a dedicated `skills/mf_analysis.md` if MF verdicting is ever introduced, but keep MF analysis informational unless there is an explicit product decision to expand scope.
+### Current state
+
+- Repo-local skills exist under `.github/skills/`
+- There is no `.github/agents/` directory
+- There is no `.github/instructions/` directory
+
+### Recommended custom instructions to add
+
+The latest `awesome-copilot` instruction catalog includes several assets that fit this repo well:
+
+| Instruction | Why it fits Artha |
+| --- | --- |
+| `code-review-generic.instructions.md` | Useful default review mode for a repo where correctness, regressions, and test impact matter more than style churn. |
+| `github-actions-ci-cd-best-practices.instructions.md` | Fits the current repo gap around CI, CodeQL, and repository automation. |
+| `python-mcp-server.instructions.md` | Relevant because Artha depends heavily on MCP integration and may eventually grow local MCP tooling. |
+| `ai-prompt-engineering-safety-best-practices.instructions.md` | Good fit for an LLM-driven financial-analysis system where safe prompting and claim discipline matter. |
+
+Do not add framework-specific instructions that do not match this repo. There is no strong need here for .NET, Java, or frontend-only instruction packs.
+
+### Recommended custom agents to add
+
+The latest `awesome-copilot` agent catalog suggests a small set that would add value here:
+
+| Agent | Why it fits Artha |
+| --- | --- |
+| `api-architect.agent.md` | Useful for the FastAPI layer, API contract cleanup, SSE design, and backend/frontend boundary review. |
+| `polyglot-test-generator.agent.md` | Good match for increasing coverage and adding regression tests around Python behavior. |
+| `adr-generator.agent.md` | Helps capture architecture decisions for model routing, caching rules, and read-only portfolio constraints. |
+| `agent-governance-reviewer.agent.md` | Relevant because this is an agentic system in a high-trust domain and needs explicit governance and auditability. |
+| `prompt-builder.agent.md` | Helpful when refining analyst prompts, output contracts, and system-message structure for safer report generation. |
+
+Install a narrow set first. `api-architect.agent.md` and `agent-governance-reviewer.agent.md` are the strongest initial candidates, followed by `polyglot-test-generator.agent.md`.
+
+## Guidance Hygiene
+
+### README and AGENTS drift
+
+- `README.md` previously listed only a subset of installed repo-local skills.
+- `AGENTS.md` previously omitted `shadcn-component-discovery` from the skill registry.
+- The repo should keep README, AGENTS, and actual `.github/skills/` contents synchronized.
+
+### Suggested next repo-doc additions
+
+- Add a short section documenting the absence or presence of `.github/agents/` and `.github/instructions/`
+- Add a minimal CI/quality roadmap to README once workflows exist
+- Add ADRs for cache invalidation policy, report verification, and API streaming contracts once those decisions are made

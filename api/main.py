@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
-import sys
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,9 +13,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import Settings, get_settings
-from kite_runtime import build_kite_client
+from kite_runtime import build_kite_client, sync_kite_data
 from models import Holding, MFSnapshot, PortfolioReport, PortfolioSnapshot, Verdict
-from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot
+from orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
+from reliability import FullRunFailed
+from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_report
 from tools import kite_get_portfolio, kite_get_profile, kite_login, profile_requires_login
 
 
@@ -318,88 +318,72 @@ def _normalize_candles(raw_history: object) -> list[PriceHistoryCandle]:
 
 
 async def _stream_run(request: RunRequest, settings: Settings) -> AsyncIterator[str]:
-    before_latest = _latest_report_name_or_none(settings)
-    command = [sys.executable, "main.py", "run"]
-    if request.rebalance_only:
-        command.append("--rebalance-only")
-    if request.ticker:
-        command.extend(["--ticker", request.ticker.upper()])
-    if request.exchange:
-        command.extend(["--exchange", request.exchange.upper()])
-
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        cwd=str(ROOT_DIR),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-
     yield _sse("status", {"state": "started"})
-    assert process.stdout is not None
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            break
-        text = line.decode("utf-8", errors="replace").rstrip()
-        if text:
-            yield _sse("log", {"line": text})
-            progress = _parse_progress_line(text)
-            if progress:
-                yield _sse("progress", progress)
 
-    return_code = await process.wait()
-    report_path = _find_new_report_path(settings, before_latest)
-    if return_code != 0:
-        yield _sse(
-            "error",
-            {
-                "message": "Artha run failed.",
-                "return_code": return_code,
-                "report_path": str(report_path) if report_path else None,
-            },
-        )
+    if request.rebalance_only:
+        try:
+            sync_result = await sync_kite_data(settings=settings)
+            report, _ = build_rebalance_only_report(sync_result.portfolio_snapshot)
+            report_path = save_report(report, settings.reports_dir)
+            yield _sse("complete", {"report_id": report_path.stem, "report_path": str(report_path)})
+        except Exception as exc:
+            yield _sse("error", {"message": str(exc), "return_code": 1, "report_path": None})
         return
 
-    yield _sse(
-        "complete",
-        {
-            "report_id": report_path.stem if report_path else None,
-            "report_path": str(report_path) if report_path else None,
-        },
-    )
+    queue: asyncio.Queue[RunEvent] = asyncio.Queue()
+
+    def on_event(event: RunEvent) -> None:
+        queue.put_nowait(event)
+
+    run_task = asyncio.create_task(_run_and_save(request, settings, on_event))
+
+    while not run_task.done():
+        try:
+            event = await asyncio.wait_for(queue.get(), timeout=0.5)
+            yield _sse_from_run_event(event)
+        except asyncio.TimeoutError:
+            continue
+
+    while not queue.empty():
+        yield _sse_from_run_event(queue.get_nowait())
+
+    try:
+        report_path = run_task.result()
+        yield _sse("complete", {"report_id": report_path.stem, "report_path": str(report_path)})
+    except FullRunFailed as exc:
+        yield _sse("error", {"message": exc.message, "phase": exc.phase, "return_code": 1, "report_path": None})
+    except Exception as exc:
+        yield _sse("error", {"message": str(exc), "return_code": 1, "report_path": None})
 
 
-def _latest_report_name_or_none(settings: Settings) -> str | None:
-    report_files = _list_report_files(settings)
-    return report_files[0].name if report_files else None
+async def _run_and_save(request: RunRequest, settings: Settings, event_callback) -> Path:
+    if request.ticker:
+        report = await run_single_company_analysis(
+            settings=settings,
+            ticker=request.ticker,
+            exchange=request.exchange,
+        )
+    else:
+        report = await run_full_analysis(settings, event_callback=event_callback)
+    return save_report(report, settings.reports_dir)
 
 
-def _find_new_report_path(settings: Settings, previous_latest: str | None) -> Path | None:
-    report_files = _list_report_files(settings)
-    if not report_files:
-        return None
-    if previous_latest is None:
-        return report_files[0]
-    if report_files[0].name != previous_latest:
-        return report_files[0]
-    return settings.reports_dir / previous_latest
+def _sse_from_run_event(event: RunEvent) -> str:
+    if event["type"] == "phase":
+        return _sse("phase", {"phase": event["phase"], "label": event["label"], "total": event["total"]})
+    return _sse("progress", {
+        "completed": event["completed"],
+        "total": event["total"],
+        "ticker": event["ticker"],
+        "verdict": event["verdict"],
+        "confidence": event["confidence"],
+        "thesis_intact": event["thesis_intact"],
+        "pnl_pct": event["pnl_pct"],
+        "duration_seconds": event["duration_seconds"],
+        "bull_case": event["bull_case"],
+        "red_flags": event["red_flags"],
+    })
 
 
 def _sse(event: str, payload: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
-
-
-def _parse_progress_line(line: str) -> dict[str, object] | None:
-    match = re.search(
-        r"\[(?P<completed>\d+)/(?P<total>\d+)\]\s+(?P<ticker>[A-Z0-9]+)\s+✓\s+(?P<verdict>[A-Z_]+)\s+\((?P<seconds>[0-9.]+)s\)",
-        line,
-    )
-    if not match:
-        return None
-    return {
-        "completed": int(match.group("completed")),
-        "total": int(match.group("total")),
-        "ticker": match.group("ticker"),
-        "verdict": match.group("verdict"),
-        "duration_seconds": float(match.group("seconds")),
-    }

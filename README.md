@@ -211,16 +211,43 @@ UI companion:
 
 Artha provides analysis only. Never execute trades automatically from its output.
 
-## Agent Skills
+## Copilot Repo Guidance
 
-The repository includes the following GitHub Copilot Agent Skills from the awesome-copilot collection, installed in `.github/skills/`:
+Repo-local Copilot assets currently installed under `.github/skills/`:
 
-- **conventional-commit**: Prompt and workflow for generating conventional commit messages using a structured XML format.
-- **create-readme**: Create a README.md file for the project.
-- **dependabot**: Comprehensive guide for configuring and managing GitHub Dependabot.
-- **doublecheck**: Three-layer verification pipeline for AI output with adversarial review for hallucination patterns.
-- **eval-driven-dev**: Instrument Python LLM apps, build golden datasets, write eval-based tests, run them, and root-cause failures.
-- **gh-cli**: GitHub CLI comprehensive reference for repositories, issues, pull requests, Actions, projects, releases, gists, codespaces, organizations, extensions, and all GitHub operations.
-- **pytest-coverage**: Run pytest tests with coverage, discover lines missing coverage, and increase coverage to 100%.
-- **python-mcp-server-generator**: Generate a complete MCP server project in Python with tools, resources, and proper configuration.
-- **sql-optimization**: Universal SQL performance optimization assistant for comprehensive query tuning, indexing strategies, and database performance analysis.
+- `agentic-eval`
+- `autoresearch`
+- `codeql`
+- `conventional-commit`
+- `create-readme`
+- `dependabot`
+- `doublecheck`
+- `eval-driven-dev`
+- `gh-cli`
+- `github-issues`
+- `polyglot-test-agent`
+- `prd`
+- `prompt-builder`
+- `pytest-coverage`
+- `python-mcp-server-generator`
+- `refactor`
+- `secret-scanning`
+- `shadcn-component-discovery`
+- `sql-code-review`
+- `sql-optimization`
+- `suggest-awesome-github-copilot-agents`
+- `suggest-awesome-github-copilot-instructions`
+- `suggest-awesome-github-copilot-skills`
+
+There are currently no repo-local custom agents in `.github/agents/` and no repo-local custom instructions in `.github/instructions/`.
+
+For this repository, the highest-value skills are:
+
+- `eval-driven-dev`, `agentic-eval`, and `pytest-coverage` for LLM quality gates and regression protection
+- `doublecheck` for verifying factual and numerical claims in financial analysis output
+- `refactor` for surgical maintainability changes
+- `create-readme` to keep repository guidance accurate
+- `dependabot`, `codeql`, and `secret-scanning` for repository guardrails
+- the three `suggest-awesome-*` skills for recommending missing Copilot assets without installing them blindly
+
+If you add custom instructions or agents later, keep them tightly scoped to this repo's Python, FastAPI, Anthropic, Kite MCP, and read-only financial-analysis constraints.

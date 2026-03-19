@@ -160,6 +160,7 @@ Current skills available under `.github/skills/`:
 - `python-mcp-server-generator`
 - `refactor`
 - `secret-scanning`
+- `shadcn-component-discovery`
 - `sql-code-review`
 - `sql-optimization`
 - `suggest-awesome-github-copilot-agents`

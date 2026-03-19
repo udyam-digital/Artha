@@ -13,11 +13,11 @@ from anthropic import AsyncAnthropic
 from config import configure_logging, get_settings
 from kite_runtime import KiteSyncResult, load_same_day_kite_sync_result, sync_kite_data
 from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
-from orchestrator import run_full_analysis, run_single_company_analysis
+from orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
 from reliability import FullRunFailed
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from research import DeepResearchOrchestrator
-from snapshot_store import load_latest_portfolio_snapshot
+from snapshot_store import load_latest_portfolio_snapshot, save_report
 from telemetry import initialize_telemetry, shutdown_telemetry
 from tools import ToolExecutionError
 from usage_tracking import format_run_summary, format_usage_summary, load_recent_run_summaries, usage_run
@@ -57,29 +57,6 @@ def _render_verdict_rows(verdicts: list[StockVerdict]) -> list[str]:
         )
     rows.append(footer)
     return rows
-
-
-def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> tuple[PortfolioReport, list[RebalancingAction]]:
-    actions = calculate_rebalancing_actions(
-        holdings=snapshot.holdings,
-        total_value=snapshot.total_value,
-        available_cash=snapshot.available_cash,
-    )
-    summary = (
-        "This is a rebalance-only run using live holdings and current market values. "
-        "Fundamental analysis was skipped, so actions are based only on drift versus target weights. "
-        "Review tax context and thesis quality before acting on any sell recommendation."
-    )
-    report = PortfolioReport(
-        generated_at=datetime.now(timezone.utc),
-        portfolio_snapshot=snapshot,
-        verdicts=[],
-        portfolio_summary=summary,
-        total_buy_required=sum(action.rupee_amount for action in actions if action.action == "BUY"),
-        total_sell_required=sum(action.rupee_amount for action in actions if action.action == "SELL"),
-        errors=[],
-    )
-    return report, actions
 
 
 def print_report(report: PortfolioReport) -> None:
@@ -251,14 +228,6 @@ def print_run_failure(exc: FullRunFailed, usage_summary: object) -> None:
     print(f"LLM usage log saved to: {usage_summary.usage_path}")
 
 
-def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    filename = report.generated_at.strftime("%Y%m%d_%H%M%S_artha_report.json")
-    output_path = reports_dir / filename
-    output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    return output_path
-
-
 async def handle_run(args: argparse.Namespace) -> int:
     settings = get_settings()
     if args.rebalance_only and args.ticker:
@@ -292,11 +261,14 @@ async def handle_run(args: argparse.Namespace) -> int:
 
     started = time.perf_counter()
 
-    def progress_callback(completed: int, total: int, verdict: StockVerdict) -> None:
-        print(
-            f"[{completed}/{total}] {verdict.tradingsymbol:<10} "
-            f"✓ {verdict.verdict.value:<9} ({verdict.analysis_duration_seconds:.1f}s)"
-        )
+    def event_callback(event: RunEvent) -> None:
+        if event["type"] == "phase":
+            logger.info("[%s] %s", event["phase"].upper(), event["label"])
+        elif event["type"] == "analyst_complete":
+            print(
+                f"[{event['completed']}/{event['total']}] {event['ticker']:<10} "
+                f"✓ {event['verdict']:<9} ({event['duration_seconds']:.1f}s)"
+            )
 
     with usage_run(settings=settings, command="run") as usage_summary:
         try:
@@ -305,7 +277,7 @@ async def handle_run(args: argparse.Namespace) -> int:
                 print("Using today's saved Kite snapshots. Skipping fresh Kite login and sync.")
             report = await run_full_analysis(
                 settings,
-                progress_callback=progress_callback,
+                event_callback=event_callback,
                 sync_result=cached_sync_result,
             )
         except FullRunFailed as exc:

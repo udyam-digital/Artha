@@ -26,7 +26,7 @@ async def test_handle_run_prints_failure_and_returns_nonzero(tmp_path: Path, mon
     settings = make_settings(tmp_path)
     monkeypatch.setattr(main, "get_settings", lambda: settings)
 
-    async def failing_run_full_analysis(settings, progress_callback=None, sync_result=None):
+    async def failing_run_full_analysis(settings, event_callback=None, sync_result=None):
         raise FullRunFailed(
             phase="analyst",
             message="anthropic timeout",
@@ -52,7 +52,7 @@ async def test_handle_run_reuses_same_day_snapshots(tmp_path: Path, monkeypatch,
     marker = object()
     monkeypatch.setattr(main, "load_same_day_kite_sync_result", lambda settings: marker)
 
-    async def fake_run_full_analysis(settings, progress_callback=None, sync_result=None):
+    async def fake_run_full_analysis(settings, event_callback=None, sync_result=None):
         assert sync_result is marker
         raise FullRunFailed(
             phase="analyst",
