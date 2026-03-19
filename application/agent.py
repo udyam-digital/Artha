@@ -62,7 +62,7 @@ class ArthaAgent:
             "research with recent, source-cited coverage across Screener, investor presentations, concalls, results, "
             "and relevant sector or company news. "
             "Exclude LIQUIDBEES, NIFTYBEES, GOLDCASE, and SILVERCASE from equity rebalancing actions, but keep them "
-            "in the portfolio snapshot and total value. Never include MF holdings in equity rebalancing actions."
+            "in the portfolio snapshot and total value. Never include MF holdings in equity rebalancing actions. "
             "You must return exactly one JSON object wrapped in <artha_report>...</artha_report> tags that validates "
             "against the PortfolioReport schema. If data is partial, still return valid JSON and record issues in errors."
         )
@@ -107,7 +107,7 @@ class ArthaAgent:
         snapshot: PortfolioSnapshot | None,
         errors: list[str],
     ) -> PortfolioReport:
-        match = re.search(r"<artha_report>\s*(\{.*\})\s*</artha_report>", raw_text, re.DOTALL)
+        match = re.search(r"<artha_report>\s*(\{.*?\})\s*</artha_report>", raw_text, re.DOTALL)
         if not match:
             errors.append("Final response did not contain <artha_report> JSON tags.")
             return self._fallback_report(raw_text, snapshot, errors)

@@ -338,7 +338,7 @@ class DeepResearchOrchestrator:
         return "\n".join(text_parts).strip()
 
     def _extract_tagged_json(self, raw_text: str, tag: str, identifier: str) -> dict[str, Any]:
-        pattern = rf"<{tag}>\s*(\{{.*\}})\s*</{tag}>"
+        pattern = rf"<{tag}>\s*(\{{.*?\}})\s*</{tag}>"
         match = re.search(pattern, raw_text, re.DOTALL)
         if not match:
             raise ResearchExecutionError(f"Research output for {identifier} did not contain <{tag}> JSON tags.")

@@ -6,6 +6,10 @@ tests/__pycache__/
 *.pyo
 *.pyd
 .Python
+.coverage
+coverage.xml
+htmlcov/
+cov_annotate/
 .venv/
 venv/
 env/
