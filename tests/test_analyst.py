@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from analyst import analyse_stock
+from analysis.analyst import analyse_stock
 from config import Settings
 from models import Holding
 
@@ -156,7 +156,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     )
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("analyst.tavily_search", lambda **kwargs: "Summary: KPIT result")
+    monkeypatch.setattr("analysis.analyst.tavily_search", lambda **kwargs: "Summary: KPIT result")
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
@@ -400,7 +400,7 @@ async def test_analyse_stock_enforces_tavily_search_budget(tmp_path: Path) -> No
     )
     client = FakeAnthropicClient([tool_use_response, final_response])
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr("analyst.tavily_search", lambda **kwargs: f"Summary: {kwargs['query']}")
+    monkeypatch.setattr("analysis.analyst.tavily_search", lambda **kwargs: f"Summary: {kwargs['query']}")
     await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,

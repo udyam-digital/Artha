@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from config import Settings
 from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
-from research import DeepResearchOrchestrator
+from application.research import DeepResearchOrchestrator
 
 
 class FakeAnthropicClient:

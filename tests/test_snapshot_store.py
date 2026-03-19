@@ -4,7 +4,7 @@ import json
 
 from config import Settings
 from models import CompanyAnalysisArtifact, Holding, MFHolding, MFSnapshot, PortfolioSnapshot, ResearchDigest
-from snapshot_store import (
+from persistence.store import (
     load_company_analysis_artifact,
     load_latest_mf_snapshot,
     load_latest_portfolio_snapshot,

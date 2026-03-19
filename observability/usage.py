@@ -14,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from config import Settings
-from telemetry import emit_span, start_span
+from observability.telemetry import emit_span, start_span
 
 
 logger = logging.getLogger(__name__)

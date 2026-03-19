@@ -7,10 +7,10 @@ from collections.abc import Awaitable, Callable
 
 from anthropic import AsyncAnthropic
 
-from analyst import generate_company_artifact
+from analysis.analyst import generate_company_artifact
 from config import Settings
 from models import CompanyAnalysisArtifact, Holding, StockVerdict
-from snapshot_store import load_company_analysis_artifact
+from persistence.store import load_company_analysis_artifact
 
 
 logger = logging.getLogger(__name__)

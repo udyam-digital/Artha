@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import orchestrator
+import application.orchestrator as orchestrator
 from reliability import FullRunFailed, RetryFailure
 from config import Settings
-from kite_runtime import KiteSyncResult
+from kite.runtime import KiteSyncResult
 from models import Holding, MFSnapshot, MFHolding, PortfolioSnapshot, RebalancingAction, StockVerdict
 
 
@@ -432,7 +432,7 @@ async def test_run_full_analysis_continues_when_price_history_is_missing(tmp_pat
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
-        from tools import ToolExecutionError
+        from kite.tools import ToolExecutionError
 
         raise ToolExecutionError("No historical data available for TIPSMUSIC")
 
@@ -721,7 +721,7 @@ async def test_run_single_company_analysis_returns_portfolio_report(tmp_path: Pa
     )
 
     monkeypatch.setattr(
-        "snapshot_store.load_latest_portfolio_snapshot",
+        "persistence.store.load_latest_portfolio_snapshot",
         lambda settings: snapshot,
     )
 
@@ -769,7 +769,7 @@ async def test_run_single_company_analysis_handles_missing_snapshot(tmp_path: Pa
     settings = make_settings(tmp_path)
 
     monkeypatch.setattr(
-        "snapshot_store.load_latest_portfolio_snapshot",
+        "persistence.store.load_latest_portfolio_snapshot",
         lambda settings: (_ for _ in ()).throw(FileNotFoundError("missing snapshot")),
     )
 

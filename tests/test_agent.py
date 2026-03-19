@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent import ArthaAgent
+from application.agent import ArthaAgent
 from config import Settings
 from models import PortfolioSnapshot
 

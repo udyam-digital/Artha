@@ -4,8 +4,8 @@ from pathlib import Path
 import builtins
 
 from config import Settings
-import telemetry
-from telemetry import build_exporter_config, emit_span, initialize_telemetry, shutdown_telemetry, start_span
+import observability.telemetry as telemetry
+from observability.telemetry import build_exporter_config, emit_span, initialize_telemetry, shutdown_telemetry, start_span
 
 
 def make_settings(tmp_path: Path, **overrides: object) -> Settings:

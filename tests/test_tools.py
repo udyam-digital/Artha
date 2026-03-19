@@ -3,19 +3,9 @@ from types import ModuleType
 from pathlib import Path
 
 from config import Settings
-from tools import (
-    DEFAULT_TAVILY_MAX_RESULTS,
-    MCPServerDefinition,
-    ToolExecutionError,
-    _holding_market_value,
-    extract_auth_url,
-    get_tavily_search_tool_definition,
-    kite_get_price_history,
-    load_kite_server_definition,
-    profile_requires_login,
-    save_kite_artifact,
-    tavily_search,
-)
+from kite.client import MCPServerDefinition, ToolExecutionError, load_kite_server_definition
+from kite.tools import _holding_market_value, extract_auth_url, kite_get_price_history, profile_requires_login, save_kite_artifact
+from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
 
 def test_load_kite_server_definition_from_env() -> None:

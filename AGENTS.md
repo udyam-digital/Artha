@@ -139,6 +139,29 @@ Notes:
   - use `.github/skills/sql-code-review/` for SQL code review and security analysis
 - Treat repo-local skills as execution guidance for this codebase, not just reference material.
 
+## Custom Agent Usage
+
+- Before substantial architecture, refactoring, API-boundary, or governance work, scan `.github/agents/` and register the relevant repo-local custom agents for the task at hand.
+- Use the narrowest relevant agent set; do not invoke unrelated agents just because they are installed.
+- Treat repo-local custom agents as execution guidance for this codebase in the same way as repo-local skills.
+- For codebase organization and structural refactoring discussions, start with `Context Architect`, then use `API Architect` when the CLI/API/service boundary is involved, and capture the chosen structure with `ADR Generator`.
+- Use `Critical thinking mode instructions` to stress-test large refactor plans before moving modules or changing boundaries.
+- Use `Agent Governance Reviewer` when the change affects agent safety, auditability, trust boundaries, tool governance, or financial-analysis controls.
+- Use `Doublecheck` when verifying factual, numerical, or source-backed claims in generated reports, recommendations, or repository guidance.
+
+### Current Repo-Local Custom Agent Registry
+
+Current agents available under `.github/agents/`:
+
+- `adr-generator.agent.md`
+- `agent-governance-reviewer.agent.md`
+- `api-architect.agent.md`
+- `context-architect.agent.md`
+- `critical-thinking.agent.md`
+- `doublecheck.agent.md`
+
+Refresh this registry whenever the contents of `.github/agents/` change so the instructions remain accurate.
+
 ### Current Repo-Local Skill Registry
 
 Current skills available under `.github/skills/`:

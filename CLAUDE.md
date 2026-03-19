@@ -104,4 +104,30 @@ reports/research/         # Per-holding deep research artifacts
 
 ## Additional Guidance
 
-See `AGENTS.md` for the full development ruleset, skill registry (`.github/skills/`), and detailed environment variable reference.
+### Repo-local custom agents
+
+The repository now includes the following custom agents under `.github/agents/`:
+
+- `context-architect.agent.md`
+- `api-architect.agent.md`
+- `adr-generator.agent.md`
+- `critical-thinking.agent.md`
+- `agent-governance-reviewer.agent.md`
+- `doublecheck.agent.md`
+
+Use them when relevant:
+
+- Start with `Context Architect` for codebase organization, multi-file refactors, boundary mapping, and dependency-aware planning.
+- Use `API Architect` when a change touches `api/main.py`, CLI/API separation, service boundaries, request/response contracts, or streaming interfaces.
+- Use `ADR Generator` to record structural decisions under `docs/adr/` after choosing an architecture direction.
+- Use `critical-thinking.agent.md` to challenge assumptions before large reorganizations.
+- Use `agent-governance-reviewer.agent.md` for safety, auditability, policy, and trust-boundary reviews in this agentic financial-analysis system.
+- Use `doublecheck.agent.md` when verifying claims, calculations, or source-backed statements before presenting them as reliable.
+
+For structure-related work in this repo, the default sequence is:
+
+1. `Context Architect`
+2. `API Architect`
+3. `ADR Generator`
+
+See `AGENTS.md` for the full development ruleset, skill registry (`.github/skills/`), custom agent registry (`.github/agents/`), and detailed environment variable reference.

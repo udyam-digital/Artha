@@ -4,7 +4,6 @@ import asyncio
 import json
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
@@ -12,17 +11,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from application.reporting import (
+    HoldingNotFoundError,
+    ReportListItem,
+    ReportNotFoundError,
+    ReportParseError,
+    find_holding_in_latest_report,
+    get_latest_report,
+    get_report_by_id,
+    list_report_items,
+)
 from config import Settings, get_settings
-from kite_runtime import build_kite_client, sync_kite_data
-from models import Holding, MFSnapshot, PortfolioReport, PortfolioSnapshot, Verdict
-from orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
+from kite.runtime import build_kite_client, sync_kite_data
+from kite.tools import kite_get_portfolio, kite_get_profile, kite_login, profile_requires_login
+from models import MFSnapshot, PortfolioReport, PortfolioSnapshot
+from application.orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
+from persistence.store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_report
 from reliability import FullRunFailed
-from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_report
-from tools import kite_get_portfolio, kite_get_profile, kite_login, profile_requires_login
 
 
 APP_VERSION = "1.0"
-ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 class HealthResponse(BaseModel):
@@ -34,15 +42,6 @@ class HoldingsResponse(PortfolioSnapshot):
     mf_snapshot: MFSnapshot | None = None
     live_status: str = "live"
     live_error: dict[str, str | None] | None = None
-
-
-class ReportListItem(BaseModel):
-    id: str
-    filename: str
-    generated_at: datetime
-    total_value: float
-    error_count: int
-    verdict_counts: dict[str, int]
 
 
 class RunRequest(BaseModel):
@@ -106,22 +105,27 @@ def create_app() -> FastAPI:
 
     @app.get("/api/reports", response_model=list[ReportListItem])
     async def reports() -> list[ReportListItem]:
-        items: list[ReportListItem] = []
-        for report_path in _list_report_files(get_settings()):
-            item = _report_to_list_item(report_path)
-            if item is not None:
-                items.append(item)
-        return items
+        return list_report_items(get_settings())
 
     @app.get("/api/reports/latest", response_model=PortfolioReport)
     async def latest_report() -> PortfolioReport:
-        report_path = _get_latest_report_path(get_settings())
-        return _load_report(report_path)
+        settings = get_settings()
+        try:
+            return get_latest_report(settings)
+        except ReportNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ReportParseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.get("/api/reports/{report_id}", response_model=PortfolioReport)
     async def report_detail(report_id: str) -> PortfolioReport:
-        report_path = _resolve_report_path(get_settings(), report_id)
-        return _load_report(report_path)
+        settings = get_settings()
+        try:
+            return get_report_by_id(settings, report_id)
+        except ReportNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ReportParseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/run")
     async def run_artha(request: RunRequest) -> StreamingResponse:
@@ -140,7 +144,14 @@ def create_app() -> FastAPI:
     @app.get("/api/price-history/{ticker}", response_model=list[PriceHistoryCandle])
     async def price_history(ticker: str) -> list[PriceHistoryCandle]:
         settings = get_settings()
-        holding = _find_holding_in_latest_report(settings, ticker)
+        try:
+            holding = find_holding_in_latest_report(settings, ticker)
+        except ReportNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ReportParseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except HoldingNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         async with build_kite_client(settings) as kite_client:
             await _ensure_authenticated(kite_client, settings)
             raw_history = await kite_client.call_tool(
@@ -209,73 +220,6 @@ def _http_exception_to_live_error(exc: HTTPException) -> dict[str, str | None]:
     if isinstance(detail, str):
         return {"message": detail, "login_url": None}
     return {"message": "Live Kite holdings unavailable. Showing the latest saved snapshot.", "login_url": None}
-
-
-def _report_to_list_item(report_path: Path) -> ReportListItem | None:
-    try:
-        report = _load_report(report_path)
-    except HTTPException:
-        return None
-    verdict_counts = {"BUY": 0, "HOLD": 0, "SELL": 0}
-    verdict_error_count = 0
-    for verdict in report.verdicts:
-        if verdict.error:
-            verdict_error_count += 1
-        bucket = _verdict_bucket(verdict.verdict)
-        verdict_counts[bucket] += 1
-    return ReportListItem(
-        id=report_path.stem,
-        filename=report_path.name,
-        generated_at=report.generated_at,
-        total_value=report.portfolio_snapshot.total_value,
-        error_count=len(report.errors) + verdict_error_count,
-        verdict_counts=verdict_counts,
-    )
-
-
-def _verdict_bucket(verdict: Verdict) -> str:
-    if verdict in {Verdict.BUY, Verdict.STRONG_BUY}:
-        return "BUY"
-    if verdict in {Verdict.SELL, Verdict.STRONG_SELL}:
-        return "SELL"
-    return "HOLD"
-
-
-def _list_report_files(settings: Settings) -> list[Path]:
-    report_files = sorted(settings.reports_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    return [path for path in report_files if path.is_file()]
-
-
-def _get_latest_report_path(settings: Settings) -> Path:
-    report_files = _list_report_files(settings)
-    if not report_files:
-        raise HTTPException(status_code=404, detail="No Artha reports found.")
-    return report_files[0]
-
-
-def _resolve_report_path(settings: Settings, report_id: str) -> Path:
-    report_path = settings.reports_dir / f"{report_id}.json"
-    if not report_path.exists():
-        raise HTTPException(status_code=404, detail=f"Report '{report_id}' not found.")
-    return report_path
-
-
-def _load_report(report_path: Path) -> PortfolioReport:
-    try:
-        return PortfolioReport.model_validate_json(report_path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Report file not found.") from exc
-    except Exception as exc:  # pragma: no cover - defensive parsing guard
-        raise HTTPException(status_code=500, detail=f"Failed to parse report {report_path.name}.") from exc
-
-
-def _find_holding_in_latest_report(settings: Settings, ticker: str) -> Holding:
-    report = _load_report(_get_latest_report_path(settings))
-    target = ticker.upper()
-    for holding in report.portfolio_snapshot.holdings:
-        if holding.tradingsymbol == target:
-            return holding
-    raise HTTPException(status_code=404, detail=f"Ticker '{target}' not found in the latest report.")
 
 
 def _normalize_candles(raw_history: object) -> list[PriceHistoryCandle]:

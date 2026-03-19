@@ -5,8 +5,8 @@ from pathlib import Path
 
 from config import Settings
 from models import MFHolding, MFSnapshot, Holding, PortfolioSnapshot
-from snapshot_store import save_mf_snapshot, save_portfolio_snapshot
-from kite_runtime import load_same_day_kite_sync_result
+from persistence.store import save_mf_snapshot, save_portfolio_snapshot
+from kite.runtime import load_same_day_kite_sync_result
 
 
 def make_settings(tmp_path: Path) -> Settings:
