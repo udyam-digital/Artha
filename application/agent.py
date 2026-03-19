@@ -107,12 +107,12 @@ class ArthaAgent:
         snapshot: PortfolioSnapshot | None,
         errors: list[str],
     ) -> PortfolioReport:
-        match = re.search(r"<artha_report>\s*(\{.*?\})\s*</artha_report>", raw_text, re.DOTALL)
-        if not match:
+        block_match = re.search(r"<artha_report>(.*?)</artha_report>", raw_text, re.DOTALL)
+        if not block_match:
             errors.append("Final response did not contain <artha_report> JSON tags.")
             return self._fallback_report(raw_text, snapshot, errors)
 
-        payload = match.group(1)
+        payload = block_match.group(1).strip()
         try:
             return PortfolioReport.model_validate_json(payload)
         except Exception:

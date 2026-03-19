@@ -180,6 +180,7 @@ def _company_artifact() -> CompanyAnalysisArtifact:
 def test_save_and_load_company_analysis_artifact_uses_alias_keys(tmp_path: Path) -> None:
     settings = Settings(ANTHROPIC_API_KEY="test-key", KITE_DATA_DIR=str(tmp_path / "kite"))
     path = save_company_analysis_artifact(_company_artifact(), settings=settings)
+    assert path == tmp_path / "kite" / "companies" / "KPITTECH.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     stock_snapshot = payload["report_card"]["stock_snapshot"]
 
@@ -196,7 +197,7 @@ def test_save_and_load_company_analysis_artifact_uses_alias_keys(tmp_path: Path)
 
 def test_load_company_analysis_artifact_migrates_legacy_52w_fields(tmp_path: Path) -> None:
     settings = Settings(ANTHROPIC_API_KEY="test-key", KITE_DATA_DIR=str(tmp_path / "kite"))
-    path = tmp_path / "companies" / "KPITTECH.json"
+    path = tmp_path / "kite" / "companies" / "KPITTECH.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = _company_artifact().model_dump(mode="json")
     stock_snapshot = payload["report_card"]["stock_snapshot"]
@@ -214,3 +215,16 @@ def test_load_company_analysis_artifact_migrates_legacy_52w_fields(tmp_path: Pat
     assert "52w_low" in migrated_stock_snapshot
     assert "high_52w" not in migrated_stock_snapshot
     assert "low_52w" not in migrated_stock_snapshot
+
+
+def test_company_analysis_artifact_atomic_write_replaces_previous_payload(tmp_path: Path) -> None:
+    settings = Settings(ANTHROPIC_API_KEY="test-key", KITE_DATA_DIR=str(tmp_path / "kite"))
+    path = save_company_analysis_artifact(_company_artifact(), settings=settings)
+    first_payload = json.loads(path.read_text(encoding="utf-8"))
+
+    updated = _company_artifact().model_copy(update={"ticker": "KPITTECH"})
+    save_company_analysis_artifact(updated, settings=settings)
+    second_payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert first_payload["ticker"] == "KPITTECH"
+    assert second_payload["ticker"] == "KPITTECH"

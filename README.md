@@ -1,6 +1,6 @@
 # Artha
 
-Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, Tavily for controllable web research snippets, connects to Zerodha/Kite through an MCP server configured in `.env`, caches strict JSON company-analysis artifacts under `data/companies/`, refreshes them only when stale, uses Claude Haiku for cost-sensitive company artifact generation, and keeps the main Artha synthesis path on Claude Sonnet.
+Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, Tavily for controllable web research snippets, connects to Zerodha/Kite through an MCP server configured in `.env`, caches strict JSON company-analysis artifacts under `data/kite/companies/`, refreshes them only when stale, uses Claude Haiku for cost-sensitive company artifact generation, and keeps the main Artha synthesis path on Claude Sonnet.
 
 The repository now also exposes a FastAPI layer under `api/` for dashboard use cases. The companion Next.js frontend lives in the sibling folder `../artha-ui`.
 
@@ -95,8 +95,8 @@ Supported flows:
 - `kite-login`: authenticate a live hosted Kite MCP session in the browser
 - `kite-sync`: fetch fresh equity and MF snapshots and persist them locally
 - `rebalance`: generate a math-only rebalancing report from the latest saved local equity snapshot, with no LLM call
-- `run`: reuses today's saved Kite equity and MF snapshots if they already exist locally; otherwise it performs one fresh Kite sync for the day, persists the snapshots locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
-- `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/companies/KPITTECH.json` as needed
+- `run`: reuses today's saved Kite equity and MF snapshots if they already exist locally; otherwise it performs one fresh Kite sync for the day, persists the snapshots locally, reuses fresh company-analysis artifacts from `data/kite/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
+- `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/kite/companies/KPITTECH.json` as needed
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Tavily-backed `tavily_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
@@ -135,7 +135,7 @@ Observability and tracing:
    If today's snapshots already exist locally, reuse them and skip a fresh hosted Kite login/sync
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch one compact price-history summary once per analyzable equity holding: `52w_high`, `52w_low`, `current_vs_52w_high_pct`, `price_1y_ago`, `price_change_1y_pct`
-4. Check `data/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
+4. Check `data/kite/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
 5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and Tavily-backed `tavily_search`, using a compact analyst input payload plus staggered starts to stay within provider TPM limits
 6. Convert each cached or refreshed company artifact into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
@@ -173,7 +173,7 @@ The CLI prints:
 
 Company artifact cache:
 
-- `data/companies/{ticker}.json` stores strict JSON with metadata and a validated analyst report card
+- `data/kite/companies/{ticker}.json` stores strict JSON with metadata and a validated analyst report card
 - artifacts are reused for up to `COMPANY_ANALYSIS_MAX_AGE_DAYS` days
 - legacy `high_52w` / `low_52w` company artifacts are auto-migrated to canonical `52w_high` / `52w_low` keys on load
 - old Python-code-style analyst payloads are not reused; they are treated as invalid cache and refreshed
@@ -185,7 +185,7 @@ Data layout:
 - `data/kite/auth/`: login artifacts
 - `data/kite/portfolio/`: latest and historical equity snapshots
 - `data/kite/mf/`: latest and historical MF snapshots
-- `data/companies/`: per-company cached company-analysis artifacts
+- `data/kite/companies/`: per-company cached company-analysis artifacts
 - `data/console_exports/`: local notes and reference exports
 - `reports/`: portfolio reports
 - `reports/research/`: per-holding research files, combined digest, and index artifacts

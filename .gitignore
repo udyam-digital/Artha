@@ -20,4 +20,5 @@ data/console_exports/*
 !data/console_exports/.gitkeep
 data/kite/*
 !data/kite/.gitkeep
+data/kite/companies/
 *.log

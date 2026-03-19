@@ -115,7 +115,13 @@ class KiteMCPClient:
         if self._session is None:
             raise ToolExecutionError("Kite MCP client is not connected.")
 
-        result = await self._session.call_tool(name, arguments or {})
+        try:
+            result = await wait_for(
+                self._session.call_tool(name, arguments or {}),
+                timeout=self.timeout_seconds,
+            )
+        except Exception as exc:
+            raise ToolExecutionError(f"Kite MCP tool '{name}' failed or timed out.") from exc
         if getattr(result, "structuredContent", None) is not None:
             return result.structuredContent
 

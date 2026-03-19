@@ -45,7 +45,7 @@ main.py (CLI)
   └─ orchestrator.py: run_full_analysis()
        1. kite_runtime.py: sync_kite_data() → data/kite/portfolio/ + data/kite/mf/
        2. tools.py: kite_get_price_history() for each holding (52w candles)
-       3. snapshot_store.py: load data/companies/{ticker}.json (cache TTL: COMPANY_ANALYSIS_MAX_AGE_DAYS)
+       3. snapshot_store.py: load data/kite/companies/{ticker}.json (cache TTL: COMPANY_ANALYSIS_MAX_AGE_DAYS)
        4. analyst.py: CompanyAnalyzer (Claude Haiku) → refreshes stale/missing artifacts
        5. rebalance.py: calculate_rebalancing_actions() → deterministic drift math
        6. agent.py: ArthaAgent (Claude Sonnet) → final synthesis → PortfolioReport
@@ -78,7 +78,7 @@ main.py (CLI)
 ```
 data/kite/portfolio/      # Equity snapshots (reused within same day)
 data/kite/mf/             # MF snapshots
-data/companies/           # Per-company analysis artifacts ({ticker}.json, TTL=7 days)
+data/kite/companies/      # Per-company analysis artifacts ({ticker}.json, TTL=7 days)
 reports/                  # PortfolioReport JSON outputs
 reports/usage/            # LLM cost JSONL (llm_usage_*, run_summaries, run_errors)
 reports/research/         # Per-holding deep research artifacts

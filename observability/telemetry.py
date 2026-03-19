@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import logging
 from contextlib import nullcontext
-from urllib.parse import urlsplit, urlunsplit
 from typing import Any
 
 from config import Settings
@@ -21,19 +20,6 @@ def _langfuse_auth_header(settings: Settings) -> str:
     token = f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode("utf-8")
     encoded = base64.b64encode(token).decode("ascii")
     return f"Basic {encoded}"
-
-
-def _redact_endpoint_for_logs(endpoint: str) -> str:
-    parts = urlsplit(endpoint)
-    if not parts.scheme or not parts.netloc:
-        return "<configured>"
-    hostname = parts.hostname
-    if hostname is None:
-        return "<configured>"
-    netloc = hostname
-    if parts.port is not None:
-        netloc = f"{netloc}:{parts.port}"
-    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def build_exporter_config(settings: Settings) -> tuple[str, dict[str, str], str] | None:
@@ -77,7 +63,7 @@ def initialize_telemetry(settings: Settings) -> bool:
         _TELEMETRY_ENABLED = False
         return False
 
-    endpoint, headers, backend = exporter_config
+    endpoint, headers, _backend = exporter_config
     provider = TracerProvider(
         resource=Resource.create(
             {
@@ -97,23 +83,25 @@ def initialize_telemetry(settings: Settings) -> bool:
 
 
 def start_span(name: str, attributes: dict[str, Any] | None = None) -> Any:
+    """Return a span context manager; the span opens only when used in `with`."""
     if not _TELEMETRY_ENABLED or _TRACER is None:
         return nullcontext(None)
     span_cm = _TRACER.start_as_current_span(name)
-    span = span_cm.__enter__()
-    for key, value in (attributes or {}).items():
-        if value is None:
-            continue
-        span.set_attribute(key, value)
-    return _ManagedSpan(span_cm=span_cm, span=span)
+    return _ManagedSpan(span_cm=span_cm, attributes=attributes or {})
 
 
 class _ManagedSpan:
-    def __init__(self, *, span_cm: Any, span: Any):
+    def __init__(self, *, span_cm: Any, attributes: dict[str, Any]):
         self._span_cm = span_cm
-        self.span = span
+        self._attributes = attributes
+        self.span: Any | None = None
 
     def __enter__(self) -> Any:
+        self.span = self._span_cm.__enter__()
+        for key, value in self._attributes.items():
+            if value is None:
+                continue
+            self.span.set_attribute(key, value)
         return self.span
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:

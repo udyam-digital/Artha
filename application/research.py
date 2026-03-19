@@ -26,6 +26,7 @@ from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_def
 
 
 logger = logging.getLogger(__name__)
+SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
 class ResearchExecutionError(RuntimeError):
@@ -36,8 +37,8 @@ class DeepResearchOrchestrator:
     def __init__(self, settings: Settings | None = None, client: AsyncAnthropic | None = None):
         self.settings = settings or get_settings()
         self.client = client or AsyncAnthropic(api_key=self.settings.anthropic_api_key)
-        self.equity_framework = (Path("skills") / "equity_analysis.md").read_text(encoding="utf-8")
-        self.portfolio_rules = (Path("skills") / "portfolio_rules.md").read_text(encoding="utf-8")
+        self.equity_framework = (SKILLS_DIR / "equity_analysis.md").read_text(encoding="utf-8")
+        self.portfolio_rules = (SKILLS_DIR / "portfolio_rules.md").read_text(encoding="utf-8")
         self.search_tool = get_tavily_search_tool_definition(self.settings)
 
     async def research_latest_snapshots(self) -> tuple[ResearchDigest, Path, list[Path], Path]:
@@ -50,34 +51,32 @@ class DeepResearchOrchestrator:
         portfolio_snapshot: PortfolioSnapshot,
         mf_snapshot: MFSnapshot | None,
     ) -> tuple[ResearchDigest, Path, list[Path], Path]:
-        equity_tasks = [
-            self._research_equity_holding(holding)
+        jobs: list[tuple[str, str, Any]] = [
+            ("equity", holding.tradingsymbol, lambda holding=holding: self._research_equity_holding(holding))
             for holding in portfolio_snapshot.holdings
             if holding.tradingsymbol not in {"LIQUIDBEES", "NIFTYBEES", "GOLDCASE", "SILVERCASE"}
         ]
-        mf_tasks = [self._research_mf_holding(holding) for holding in (mf_snapshot.holdings if mf_snapshot else [])]
-
-        equity_results = await asyncio.gather(*equity_tasks, return_exceptions=True)
-        mf_results = await asyncio.gather(*mf_tasks, return_exceptions=True)
+        jobs.extend(
+            ("mf", holding.tradingsymbol or holding.fund, lambda holding=holding: self._research_mf_holding(holding))
+            for holding in (mf_snapshot.holdings if mf_snapshot else [])
+        )
+        results = await self._run_research_jobs(jobs)
 
         equity_reports: list[EquityResearchArtifact] = []
         mf_reports: list[MFResearchArtifact] = []
         errors: list[str] = []
         per_holding_payloads: dict[str, dict[str, Any]] = {}
 
-        for result in equity_results:
+        for kind, result in results:
             if isinstance(result, Exception):
                 errors.append(str(result))
                 continue
-            equity_reports.append(result)
-            per_holding_payloads[result.identifier] = result.model_dump(mode="json")
-
-        for result in mf_results:
-            if isinstance(result, Exception):
-                errors.append(str(result))
-                continue
-            mf_reports.append(result)
-            per_holding_payloads[result.identifier] = result.model_dump(mode="json")
+            key = self._unique_payload_key(kind, result.identifier, per_holding_payloads)
+            per_holding_payloads[key] = result.model_dump(mode="json")
+            if kind == "equity":
+                equity_reports.append(result)
+            else:
+                mf_reports.append(result)
 
         digest_text = await self._build_digest_text(equity_reports, mf_reports, errors)
         digest = ResearchDigest(
@@ -208,8 +207,8 @@ class DeepResearchOrchestrator:
         for iteration in range(1, self.settings.max_iterations + 1):
             log_estimated_input_tokens(label=f"[{label}]", messages=messages, system=system)
             response = await self.client.messages.create(
-                model=self.settings.model,
-                max_tokens=self.settings.max_tokens,
+                model=self.settings.analyst_model,
+                max_tokens=self.settings.analyst_max_tokens,
                 system=system,
                 messages=messages,
                 tools=[self.search_tool],
@@ -217,7 +216,7 @@ class DeepResearchOrchestrator:
             record_anthropic_usage(
                 settings=self.settings,
                 label=label,
-                model=self.settings.model,
+                model=self.settings.analyst_model,
                 response=response,
                 metadata={**metadata, "iteration": iteration},
             )
@@ -260,7 +259,8 @@ class DeepResearchOrchestrator:
                         )
                         continue
                     try:
-                        result = tavily_search(
+                        result = await asyncio.to_thread(
+                            tavily_search,
                             query=str(block.input["query"]),
                             max_results=int(block.input.get("max_results", DEFAULT_TAVILY_MAX_RESULTS)),
                             settings=self.settings,
@@ -314,7 +314,7 @@ class DeepResearchOrchestrator:
         log_estimated_input_tokens(label="[research_digest]", messages=messages)
         response = await self.client.messages.create(
             model=self.settings.model,
-            max_tokens=min(self.settings.max_tokens, 2000),
+            max_tokens=self.settings.summary_max_tokens,
             messages=messages,
         )
         record_anthropic_usage(
@@ -330,6 +330,52 @@ class DeepResearchOrchestrator:
             },
         )
         return self._extract_text(response) or "No research digest generated."
+
+    async def _run_research_jobs(
+        self,
+        jobs: list[tuple[str, str, Any]],
+    ) -> list[tuple[str, EquityResearchArtifact | MFResearchArtifact | Exception]]:
+        if not jobs:
+            return []
+
+        semaphore = asyncio.Semaphore(max(self.settings.analyst_parallelism, 1))
+        start_lock = asyncio.Lock()
+        next_start_at = 0.0
+        stagger_seconds = max(self.settings.analyst_min_start_interval_seconds, 0.0)
+
+        async def run_job(
+            kind: str,
+            _identifier: str,
+            factory: Any,
+        ) -> tuple[str, EquityResearchArtifact | MFResearchArtifact | Exception]:
+            nonlocal next_start_at
+            async with semaphore:
+                async with start_lock:
+                    if stagger_seconds:
+                        loop = asyncio.get_running_loop()
+                        now = loop.time()
+                        wait_seconds = max(next_start_at - now, 0.0)
+                        if wait_seconds:
+                            await asyncio.sleep(wait_seconds)
+                            now = loop.time()
+                        next_start_at = now + stagger_seconds
+                try:
+                    return kind, await factory()
+                except Exception as exc:  # pragma: no cover
+                    return kind, exc
+
+        tasks = [asyncio.create_task(run_job(kind, identifier, factory)) for kind, identifier, factory in jobs]
+        return await asyncio.gather(*tasks)
+
+    @staticmethod
+    def _unique_payload_key(kind: str, identifier: str, existing_payloads: dict[str, dict[str, Any]]) -> str:
+        base_key = f"{kind}_{identifier}".replace("/", "_").replace(" ", "_").upper()
+        candidate = base_key
+        suffix = 2
+        while candidate in existing_payloads:
+            candidate = f"{base_key}_{suffix}"
+            suffix += 1
+        return candidate
 
     def _extract_text(self, response: Any) -> str:
         text_parts: list[str] = []

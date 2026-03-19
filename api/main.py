@@ -7,6 +7,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator
+from urllib.error import URLError
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,7 +97,7 @@ def create_app() -> FastAPI:
                 live_status="fallback",
                 live_error=_http_exception_to_live_error(exc),
             )
-        except Exception:
+        except (OSError, TimeoutError, URLError):
             snapshot = _load_latest_portfolio_snapshot_or_none(settings)
             if snapshot is None:
                 raise HTTPException(status_code=503, detail="Failed to reach Kite MCP.")

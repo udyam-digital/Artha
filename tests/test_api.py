@@ -115,6 +115,17 @@ def test_report_detail_and_latest(monkeypatch, tmp_path: Path) -> None:
     assert detail.json()["verdicts"][0]["tradingsymbol"] == "KPITTECH"
 
 
+def test_report_detail_blocks_path_traversal(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    write_report(settings, make_report(), "20260319_120000_artha_report")
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    client = TestClient(api_main.create_app())
+
+    response = client.get("/api/reports/../../etc/passwd")
+
+    assert response.status_code == 404
+
+
 def test_report_parse_errors_return_generic_500s(monkeypatch, tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     monkeypatch.setattr(api_main, "get_settings", lambda: settings)
@@ -275,6 +286,34 @@ def test_holdings_without_cache_still_requires_login(monkeypatch, tmp_path: Path
 
     assert response.status_code == 401
     assert response.json()["detail"]["login_url"] == "https://kite.example/login"
+
+
+def test_holdings_does_not_mask_unexpected_exceptions(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_profile(_kite_client):
+        return {"user_name": "ok"}
+
+    async def broken_portfolio(*args, **kwargs):
+        del args, kwargs
+        raise ValueError("unexpected bug")
+
+    monkeypatch.setattr(api_main, "build_kite_client", lambda settings: FakeClient())
+    monkeypatch.setattr(api_main, "kite_get_profile", fake_profile)
+    monkeypatch.setattr(api_main, "kite_get_portfolio", broken_portfolio)
+    client = TestClient(api_main.create_app(), raise_server_exceptions=False)
+
+    response = client.get("/api/holdings")
+
+    assert response.status_code == 500
 
 
 def _parse_sse_stream(raw: bytes) -> list[dict]:

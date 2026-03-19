@@ -522,7 +522,8 @@ Use this skill when:
 
 # After: Chain of responsibility
 + abstract class Validator {
-+   abstract validate(user: User): string | null;
++   protected next?: Validator;
++   protected abstract doValidate(user: User): string | null;
 +   setNext(validator: Validator): Validator {
 +     this.next = validator;
 +     return validator;

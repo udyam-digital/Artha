@@ -125,12 +125,12 @@ model: "[only if specific model required]"
 [Success criteria and validation steps]
 ```
 
-The generated prompt will follow patterns observed in high-quality prompts like:
-- **Comprehensive blueprints** (architecture-blueprint-generator)
-- **Structured specifications** (create-github-action-workflow-specification)  
-- **Best practice guides** (dotnet-best-practices, csharp-xunit)
-- **Implementation plans** (create-implementation-plan)
-- **Code generation** (playwright-generate-test)
+The generated prompt will follow patterns commonly seen in high-quality prompt libraries and internal prompt inventories, for example:
+- **Comprehensive blueprints** for architecture and system design
+- **Structured specifications** for workflows, automations, or APIs
+- **Best practice guides** for language- or framework-specific development
+- **Implementation plans** for staged delivery and execution
+- **Code generation** prompts for testing, scaffolding, or transformation
 
 Each prompt will be optimized for:
 - **AI Consumption**: Token-efficient, structured content

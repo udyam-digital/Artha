@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import timezone
 from pathlib import Path
 from typing import TypeVar
@@ -14,14 +16,33 @@ from models import CompanyAnalysisArtifact, MFSnapshot, PortfolioReport, Portfol
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-def _write_model(model: BaseModel, path: Path) -> None:
+def _write_text_atomic(text: str, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(model.model_dump_json(indent=2, by_alias=True), encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_model(model: BaseModel, path: Path) -> None:
+    _write_text_atomic(model.model_dump_json(indent=2, by_alias=True), path)
 
 
 def _write_payload(payload: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    _write_text_atomic(json.dumps(payload, indent=2, ensure_ascii=True), path)
 
 
 def _timestamped_path(base_dir: Path, stem: str) -> Path:
@@ -102,14 +123,14 @@ def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
     reports_dir.mkdir(parents=True, exist_ok=True)
     filename = report.generated_at.strftime("%Y%m%d_%H%M%S_artha_report.json")
     output_path = reports_dir / filename
-    output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    _write_text_atomic(report.model_dump_json(indent=2), output_path)
     return output_path
 
 
 def company_analysis_path(ticker: str, settings: Settings | None = None) -> Path:
     settings = settings or get_settings()
     safe_ticker = ticker.upper().replace("/", "_").replace(" ", "_")
-    return settings.kite_data_dir.parent / "companies" / f"{safe_ticker}.json"
+    return settings.kite_data_dir / "companies" / f"{safe_ticker}.json"
 
 
 def save_company_analysis_artifact(

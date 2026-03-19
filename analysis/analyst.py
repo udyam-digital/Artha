@@ -321,9 +321,9 @@ async def generate_company_artifact(
         f"Analyse this Indian stock using tavily_search and return exactly one valid JSON object only.\n"
         f"You may call tavily_search at most {config.analyst_max_searches} times. "
         "Prefer these queries in order if needed: "
-        f"'{holding.tradingsymbol} latest quarterly results FY25', "
+        f"'{holding.tradingsymbol} latest quarterly results', "
         f"'{holding.tradingsymbol} screener.in fundamentals ROCE debt', "
-        f"and '{holding.tradingsymbol} recent news management commentary 2025'.\n"
+        f"and '{holding.tradingsymbol} recent news management commentary'.\n"
         "Input JSON:\n"
         + json.dumps(
             {

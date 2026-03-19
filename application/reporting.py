@@ -109,7 +109,11 @@ def _get_latest_report_path(settings: Settings) -> Path:
 
 
 def _resolve_report_path(settings: Settings, report_id: str) -> Path:
-    report_path = settings.reports_dir / f"{report_id}.json"
-    if not report_path.exists():
+    if Path(report_id).name != report_id or report_id.endswith(".json"):
+        raise ReportNotFoundError(f"Report '{report_id}' not found.")
+
+    base_dir = settings.reports_dir.resolve()
+    report_path = (base_dir / f"{report_id}.json").resolve()
+    if report_path.parent != base_dir or not report_path.is_file():
         raise ReportNotFoundError(f"Report '{report_id}' not found.")
     return report_path

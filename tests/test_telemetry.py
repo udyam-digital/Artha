@@ -45,14 +45,6 @@ def test_build_exporter_config_uses_generic_otlp_when_langfuse_missing(tmp_path:
     assert endpoint == "https://otel.example.com/custom"
     assert headers == {"x-test": "1"}
 
-
-def test_redact_endpoint_for_logs_removes_query_and_credentials() -> None:
-    redacted = telemetry._redact_endpoint_for_logs(  # noqa: SLF001
-        "https://user:secret@example.com:4318/v1/traces?api_key=secret-token"
-    )
-    assert redacted == "https://example.com:4318/v1/traces"
-
-
 def test_build_exporter_config_returns_none_when_disabled_or_unconfigured(tmp_path: Path) -> None:
     disabled = make_settings(tmp_path, TELEMETRY_ENABLED=False)
     assert build_exporter_config(disabled) is None
@@ -82,6 +74,44 @@ def test_initialize_and_shutdown_telemetry_with_otlp(tmp_path: Path) -> None:
         assert span is not None
     emit_span("artha.event", {"x": 1})
     assert initialize_telemetry(settings) is True
+    shutdown_telemetry()
+
+
+def test_start_span_enters_context_lazily() -> None:
+    entered = False
+    exited = False
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key: str, value: object) -> None:
+            self.attributes[key] = value
+
+    class FakeContextManager:
+        def __enter__(self):
+            nonlocal entered
+            entered = True
+            return FakeSpan()
+
+        def __exit__(self, exc_type, exc, tb):
+            nonlocal exited
+            exited = True
+
+    class FakeTracer:
+        def start_as_current_span(self, name: str):
+            assert name == "lazy"
+            return FakeContextManager()
+
+    telemetry._TELEMETRY_ENABLED = True  # noqa: SLF001
+    telemetry._TRACER = FakeTracer()  # noqa: SLF001
+
+    span_cm = start_span("lazy", {"foo": "bar"})
+    assert entered is False
+    with span_cm as span:
+        assert entered is True
+        assert span.attributes == {"foo": "bar"}
+    assert exited is True
     shutdown_telemetry()
 
 

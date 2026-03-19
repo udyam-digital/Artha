@@ -69,7 +69,6 @@ class Settings(BaseSettings):
         "otel_exporter_otlp_endpoint",
         "langfuse_public_key",
         "langfuse_secret_key",
-        "langfuse_base_url",
         "tavily_api_key",
         mode="before",
     )
@@ -78,6 +77,14 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).strip()
+
+    @field_validator("langfuse_base_url", mode="before")
+    @classmethod
+    def parse_langfuse_base_url(cls, value: object) -> str:
+        if value is None:
+            return "https://cloud.langfuse.com"
+        url = str(value).strip()
+        return url or "https://cloud.langfuse.com"
 
     @field_validator("kite_mcp_command", mode="before")
     @classmethod

@@ -82,8 +82,10 @@ def _should_gate_to_hold(verdict: Verdict, thesis_intact: bool) -> bool:
         return True
     if verdict in {Verdict.BUY, Verdict.STRONG_BUY}:
         return not thesis_intact
-    if verdict in {Verdict.SELL, Verdict.STRONG_SELL}:
+    if verdict == Verdict.STRONG_SELL:
         return thesis_intact
+    if verdict == Verdict.SELL:
+        return False
     return True
 
 
@@ -303,7 +305,15 @@ async def run_full_analysis(
                 for holding in sync_result.portfolio_snapshot.holdings
                 if holding.tradingsymbol not in PASSIVE_INSTRUMENTS
             ]
-            logger.info("Using saved same-day Kite snapshots; skipping fresh sync and price-history fetch.")
+            holdings_needing_context = [
+                holding for holding in equity_holdings if _holding_requires_refresh(holding=holding, settings=settings)
+            ]
+            if holdings_needing_context:
+                price_context_by_symbol = await _price_contexts(
+                    settings=settings,
+                    holdings=holdings_needing_context,
+                )
+            logger.info("Using saved same-day Kite snapshots; reusing snapshots but refreshing needed price history.")
     except RetryFailure as exc:
         error_path = record_run_error(
             settings=settings,
@@ -367,6 +377,11 @@ async def run_full_analysis(
         try:
             verdict = await task
         except RetryFailure as exc:
+            pending_tasks = [active_task for active_task in task_to_symbol if not active_task.done()]
+            for active_task in pending_tasks:
+                active_task.cancel()
+            if pending_tasks:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
             error_path = record_run_error(
                 settings=settings,
                 phase=exc.phase,
@@ -509,7 +524,7 @@ async def run_single_company_analysis(
         from persistence.store import load_latest_portfolio_snapshot
 
         snapshot = load_latest_portfolio_snapshot(settings)
-    except Exception:
+    except FileNotFoundError:
         snapshot = None
 
     holding = None

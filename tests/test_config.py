@@ -89,6 +89,14 @@ def test_langfuse_base_url_is_stripped() -> None:
     assert settings.langfuse_base_url == "https://cloud.langfuse.com"
 
 
+def test_blank_langfuse_base_url_preserves_default() -> None:
+    settings = Settings(
+        ANTHROPIC_API_KEY="test-key",
+        LANGFUSE_BASE_URL="   ",
+    )
+    assert settings.langfuse_base_url == "https://cloud.langfuse.com"
+
+
 def test_analyst_runtime_controls_parse() -> None:
     settings = Settings(
         ANTHROPIC_API_KEY="test-key",

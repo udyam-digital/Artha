@@ -711,6 +711,115 @@ async def test_run_full_analysis_fails_fast_on_summary_retry_failure(tmp_path: P
     assert exc_info.value.phase == "portfolio_summary"
 
 
+async def test_run_full_analysis_with_saved_sync_result_still_fetches_price_context(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+    captured_price_contexts = []
+
+    async def fake_price_contexts(**kwargs):
+        return {
+            "KPITTECH": {
+                "52w_high": 120.0,
+                "52w_low": 80.0,
+                "current_vs_52w_high_pct": -10.0,
+            }
+        }
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        captured_price_contexts.append(kwargs["price_context"])
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="KPITTECH",
+                company_name="KPIT Tech",
+                verdict="BUY",
+                confidence="HIGH",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Auto slowdown risk.",
+                what_to_watch="Deal wins",
+                red_flags=[],
+                rebalance_action="BUY",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "_price_contexts", fake_price_contexts)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    report = await orchestrator.run_full_analysis(settings, sync_result=sync_result)
+
+    assert report.verdicts[0].tradingsymbol == "KPITTECH"
+    assert captured_price_contexts[0]["52w_high"] == 120.0
+
+
+async def test_run_full_analysis_cancels_other_tasks_after_fatal_failure(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path, ANALYST_PARALLELISM=2)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("KPITTECH", 4.0, 8.0), make_holding("BSE", 14.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+    cancelled = asyncio.Event()
+
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        holding = kwargs["holding"]
+        if holding.tradingsymbol == "KPITTECH":
+            raise TimeoutError("anthropic timeout")
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("Expected cancellation")
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    with pytest.raises(FullRunFailed):
+        await orchestrator.run_full_analysis(settings)
+
+    assert cancelled.is_set()
+
+
 async def test_run_single_company_analysis_returns_portfolio_report(tmp_path: Path, monkeypatch) -> None:
     settings = make_settings(tmp_path)
     snapshot = PortfolioSnapshot(
@@ -809,6 +918,18 @@ async def test_run_single_company_analysis_handles_missing_snapshot(tmp_path: Pa
     report = await orchestrator.run_single_company_analysis(settings=settings, ticker="INFY")
     assert report.verdicts[0].tradingsymbol == "INFY"
     assert [holding.tradingsymbol for holding in report.portfolio_snapshot.holdings] == ["INFY"]
+
+
+async def test_run_single_company_analysis_does_not_swallow_snapshot_parse_errors(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+
+    monkeypatch.setattr(
+        "persistence.store.load_latest_portfolio_snapshot",
+        lambda settings: (_ for _ in ()).throw(ValueError("corrupt snapshot")),
+    )
+
+    with pytest.raises(ValueError, match="corrupt snapshot"):
+        await orchestrator.run_single_company_analysis(settings=settings, ticker="INFY")
 
 
 async def test_run_full_analysis_emits_structured_events_in_order(tmp_path: Path, monkeypatch) -> None:
@@ -933,7 +1054,7 @@ def test_gate_helpers_cover_sell_and_missing_action() -> None:
     merged = orchestrator._merge_action_into_verdict(verdict, None)
     assert merged.rebalance_action == "HOLD"
     assert merged.rebalance_reasoning == "No deterministic rebalance action was generated for this holding."
-    assert orchestrator._should_gate_to_hold("SELL", True) is True
+    assert orchestrator._should_gate_to_hold("SELL", True) is False
     assert orchestrator._should_gate_to_hold("STRONG_SELL", False) is False
     assert orchestrator._should_gate_to_hold("UNKNOWN", True) is True
 

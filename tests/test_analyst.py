@@ -170,7 +170,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     assert verdict.current_price == 80.0
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
-    assert (tmp_path / "companies" / "KPITTECH.json").exists()
+    assert (tmp_path / "kite" / "companies" / "KPITTECH.json").exists()
     assert "tavily_search" == tool_use_response.content[0].name
 
 
@@ -230,6 +230,9 @@ async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> 
     assert "price_1y_ago" not in prompt
     assert "price_change_1y_pct" not in prompt
     assert "candles" not in prompt
+    assert "latest quarterly results FY25" not in prompt
+    assert "management commentary 2025" not in prompt
+    assert "latest quarterly results" in prompt
 
 
 async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
@@ -323,7 +326,7 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
     assert verdict.current_price == 1420.0
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
-    assert (tmp_path / "companies" / "INFY.json").exists()
+    assert (tmp_path / "kite" / "companies" / "INFY.json").exists()
 
 
 async def test_analyse_stock_rejects_legacy_python_payload(tmp_path: Path) -> None:

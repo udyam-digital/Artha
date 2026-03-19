@@ -3,7 +3,7 @@ from types import ModuleType
 from pathlib import Path
 
 from config import Settings
-from kite.client import MCPServerDefinition, ToolExecutionError, load_kite_server_definition
+from kite.client import KiteMCPClient, MCPServerDefinition, ToolExecutionError, load_kite_server_definition
 from kite.tools import _holding_market_value, extract_auth_url, kite_get_price_history, profile_requires_login, save_kite_artifact
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
@@ -74,6 +74,23 @@ class FakeKiteClient:
 
     async def call_tool(self, name, payload=None):
         return self.payload
+
+
+def test_kite_mcp_client_call_tool_applies_timeout() -> None:
+    class HangingSession:
+        async def call_tool(self, name, arguments):
+            del name, arguments
+            await asyncio.sleep(0.05)
+
+    client = KiteMCPClient(MCPServerDefinition("http", "https://example.com", "", [], {}), timeout_seconds=0)
+    client._session = HangingSession()
+
+    try:
+        asyncio.run(client.call_tool("get_profile"))
+    except ToolExecutionError as exc:
+        assert "get_profile" in str(exc)
+    else:
+        raise AssertionError("Expected ToolExecutionError")
 
 
 def test_kite_get_price_history_returns_summary_only() -> None:
