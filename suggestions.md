@@ -146,6 +146,20 @@ Enable real-time portfolio monitoring:
 **Phase 3 (Weeks 5-6)**: Expand MCP ecosystem and implement advanced AI patterns
 **Phase 4 (Weeks 7-8)**: Focus on security, compliance, and performance optimization
 
+## New UI/API Follow-Ups
+
+### 1. Persist report metadata for faster `/api/reports`
+- The new FastAPI layer currently computes report summaries by reading and validating each JSON report file on demand.
+- Add a lightweight `reports/index.json` sidecar or append-only metadata ledger so the dashboard can list large report histories without reparsing every file.
+
+### 2. Promote structured SSE progress from CLI to orchestrator
+- The dashboard currently consumes streamed stdout and parsed progress lines from `main.py run`.
+- A cleaner next step is to move progress events into a structured emitter in the orchestrator so the API can stream typed analyst states without depending on console formatting.
+
+### 3. Add a dedicated MF API contract
+- The holdings API currently returns live equity holdings plus the latest saved MF snapshot as an extended response.
+- Formalize this into an explicit shared model or a dedicated `/api/mf-holdings` endpoint so the frontend contract is clearer and less coupled to a dashboard-specific extension.
+
 ## Success Metrics
 
 - **Quality**: <5% error rate in financial recommendations

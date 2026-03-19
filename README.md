@@ -2,6 +2,8 @@
 
 Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, Tavily for controllable web research snippets, connects to Zerodha/Kite through an MCP server configured in `.env`, caches strict JSON company-analysis artifacts under `data/companies/`, refreshes them only when stale, uses Claude Haiku for cost-sensitive company artifact generation, and keeps the main Artha synthesis path on Claude Sonnet.
 
+The repository now also exposes a FastAPI layer under `api/` for dashboard use cases. The companion Next.js frontend lives in the sibling folder `../artha-ui`.
+
 ## Prerequisites
 
 - Python 3.11+
@@ -68,6 +70,12 @@ Authenticate and sync fresh snapshots:
 
 `kite-login` is the supported auth flow. It keeps the same MCP session alive while you complete browser login, then fetches and stores fresh equity and MF snapshots once authentication succeeds. `kite-sync` is the same sync primitive without a separate report step.
 
+Start the API server:
+
+```bash
+.venv/bin/python -m uvicorn api.main:app --reload --port 8000
+```
+
 ## Usage
 
 ```bash
@@ -93,6 +101,16 @@ Supported flows:
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Tavily-backed `tavily_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
 - `usage-report --last 10`: prints recent historical run summaries from the persistent run ledger
+
+Dashboard API endpoints:
+
+- `GET /api/health`: health check
+- `GET /api/holdings`: live equity holdings plus latest saved MF snapshot, with 401 + Kite login URL when the session is expired
+- `GET /api/reports`: report index with verdict counts and error counts
+- `GET /api/reports/latest`: latest full `PortfolioReport`
+- `GET /api/reports/{report_id}`: full saved report by filename stem
+- `GET /api/price-history/{ticker}`: 1Y daily candles for a holding found in the latest report
+- `POST /api/run`: streamed SSE wrapper around `python main.py run`
 
 LLM cost logging:
 
@@ -171,6 +189,12 @@ Data layout:
 - `data/console_exports/`: local notes and reference exports
 - `reports/`: portfolio reports
 - `reports/research/`: per-holding research files, combined digest, and index artifacts
+
+UI companion:
+
+- `../artha-ui`: Next.js 14 dashboard for holdings, reports, stock detail, and live run monitoring
+- `../artha-ui/.env.local`: set `NEXT_PUBLIC_API_URL=http://localhost:8000`
+- `../artha-ui/package.json`: includes `npm run dev:all` to start both the FastAPI backend and the Next.js frontend
 
 ## Model Split
 
