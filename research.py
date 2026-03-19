@@ -21,7 +21,7 @@ from models import (
     ResearchDigest,
 )
 from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_research_digest
-from tools import get_web_search_tool_definition
+from tools import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 from usage_tracking import log_estimated_input_tokens, record_anthropic_usage
 
 
@@ -38,7 +38,7 @@ class DeepResearchOrchestrator:
         self.client = client or AsyncAnthropic(api_key=self.settings.anthropic_api_key)
         self.equity_framework = (Path("skills") / "equity_analysis.md").read_text(encoding="utf-8")
         self.portfolio_rules = (Path("skills") / "portfolio_rules.md").read_text(encoding="utf-8")
-        self.web_search_tool = get_web_search_tool_definition()
+        self.search_tool = get_tavily_search_tool_definition(self.settings)
 
     async def research_latest_snapshots(self) -> tuple[ResearchDigest, Path, list[Path], Path]:
         portfolio_snapshot = load_latest_portfolio_snapshot(self.settings)
@@ -110,7 +110,8 @@ class DeepResearchOrchestrator:
             f"Research this Indian equity holding deeply: {holding.tradingsymbol} on {holding.exchange}. "
             f"Current portfolio weight: {holding.current_weight_pct:.2f}%. "
             f"Target weight: {holding.target_weight_pct:.2f}%. "
-            "Use web_search extensively across Screener, latest results, concalls, investor presentations, "
+            f"Use tavily_search up to {self.settings.analyst_max_searches} times across Screener, latest results, "
+            "concalls, investor presentations, "
             "exchange filings, and recent sector/company news. "
             "Return exactly one JSON object wrapped in <equity_research>...</equity_research> tags with keys: "
             "identifier, title, data_freshness, sources, bull_case, bear_case, what_to_watch, red_flags, confidence_summary."
@@ -152,7 +153,8 @@ class DeepResearchOrchestrator:
             f"Research this Indian mutual fund deeply: {holding.fund}. "
             f"Scheme type: {holding.scheme_type or 'Unknown'}. Plan: {holding.plan or 'Unknown'}. "
             f"Current value: INR {holding.current_value:.2f}. "
-            "Use web_search extensively across AMC pages, Value Research, Morningstar if available, factsheets, "
+            f"Use tavily_search up to {self.settings.analyst_max_searches} times across AMC pages, Value Research, "
+            "Morningstar if available, factsheets, "
             "portfolio disclosures, and recent fund commentary. "
             "Return exactly one JSON object wrapped in <mf_research>...</mf_research> tags with keys: "
             "identifier, title, data_freshness, sources, fund_house, category, mandate, portfolio_style, "
@@ -202,6 +204,7 @@ class DeepResearchOrchestrator:
         metadata: dict[str, Any],
     ) -> str:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
+        searches_used = 0
         for iteration in range(1, self.settings.max_iterations + 1):
             log_estimated_input_tokens(label=f"[{label}]", messages=messages, system=system)
             response = await self.client.messages.create(
@@ -209,7 +212,7 @@ class DeepResearchOrchestrator:
                 max_tokens=self.settings.max_tokens,
                 system=system,
                 messages=messages,
-                tools=[self.web_search_tool],
+                tools=[self.search_tool],
             )
             record_anthropic_usage(
                 settings=self.settings,
@@ -222,7 +225,67 @@ class DeepResearchOrchestrator:
             if stop_reason == "pause_turn":
                 messages.append({"role": "assistant", "content": response.content})
                 continue
-            if stop_reason in {"end_turn", "max_tokens", "tool_use"}:
+            if stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results: list[dict[str, Any]] = []
+                for block in response.content:
+                    if getattr(block, "type", None) != "tool_use":
+                        continue
+                    if getattr(block, "name", "") != "tavily_search":
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps({"error": f"Unsupported tool requested: {block.name}"}, ensure_ascii=True),
+                                "is_error": True,
+                            }
+                        )
+                        continue
+                    if searches_used >= self.settings.analyst_max_searches:
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps(
+                                    {
+                                        "error": (
+                                            f"tavily_search budget exhausted; max "
+                                            f"{self.settings.analyst_max_searches} searches allowed."
+                                        )
+                                    },
+                                    ensure_ascii=True,
+                                ),
+                                "is_error": True,
+                            }
+                        )
+                        continue
+                    try:
+                        result = tavily_search(
+                            query=str(block.input["query"]),
+                            max_results=int(block.input.get("max_results", DEFAULT_TAVILY_MAX_RESULTS)),
+                            settings=self.settings,
+                        )
+                        searches_used += 1
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result,
+                            }
+                        )
+                    except Exception as exc:
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps({"error": str(exc)}, ensure_ascii=True),
+                                "is_error": True,
+                            }
+                        )
+                if tool_results:
+                    messages.append({"role": "user", "content": tool_results})
+                continue
+            if stop_reason in {"end_turn", "max_tokens"}:
                 return self._extract_text(response)
         raise ResearchExecutionError("Research sub-agent exceeded MAX_ITERATIONS.")
 

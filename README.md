@@ -1,11 +1,12 @@
 # Artha
 
-Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, connects to Zerodha/Kite through an MCP server configured in `.env`, caches strict JSON company-analysis artifacts under `data/companies/`, refreshes them only when stale, uses Claude Haiku for cost-sensitive company artifact generation, and keeps the main Artha synthesis path on Claude Sonnet.
+Artha is a read-only portfolio research and rebalancing agent for Indian equity portfolios. It uses Anthropic for reasoning, Tavily for controllable web research snippets, connects to Zerodha/Kite through an MCP server configured in `.env`, caches strict JSON company-analysis artifacts under `data/companies/`, refreshes them only when stale, uses Claude Haiku for cost-sensitive company artifact generation, and keeps the main Artha synthesis path on Claude Sonnet.
 
 ## Prerequisites
 
 - Python 3.11+
-- Anthropic API key with web search enabled
+- Anthropic API key
+- Tavily API key
 - Access to Zerodha’s hosted Kite MCP or a working Kite MCP command you can run from this machine
 
 ## Setup
@@ -14,6 +15,13 @@ Artha is a read-only portfolio research and rebalancing agent for Indian equity 
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
+```
+
+Set the API keys in `.env`:
+
+```bash
+ANTHROPIC_API_KEY=
+TAVILY_API_KEY=
 ```
 
 Set the Kite runtime in `.env`:
@@ -33,6 +41,7 @@ Model routing in `.env`:
 MODEL=claude-sonnet-4-6
 ANALYST_MODEL=claude-haiku-4-5
 ANALYST_MAX_TOKENS=2500
+ANALYST_MAX_SEARCHES=3
 ANALYST_PARALLELISM=2
 ANALYST_MIN_START_INTERVAL_SECONDS=3
 SUMMARY_MAX_TOKENS=700
@@ -81,7 +90,7 @@ Supported flows:
 - `run`: reuses today's saved Kite equity and MF snapshots if they already exist locally; otherwise it performs one fresh Kite sync for the day, persists the snapshots locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
 - `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/companies/KPITTECH.json` as needed
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
-- `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
+- `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Tavily-backed `tavily_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
 - `usage-report --last 10`: prints recent historical run summaries from the persistent run ledger
 
@@ -109,7 +118,7 @@ Observability and tracing:
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch one compact price-history summary once per analyzable equity holding: `52w_high`, `52w_low`, `current_vs_52w_high_pct`, `price_1y_ago`, `price_change_1y_pct`
 4. Check `data/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
-5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and native `web_search`, using a compact analyst input payload plus staggered starts to stay within provider TPM limits
+5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and Tavily-backed `tavily_search`, using a compact analyst input payload plus staggered starts to stay within provider TPM limits
 6. Convert each cached or refreshed company artifact into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
 8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
@@ -168,6 +177,7 @@ Data layout:
 - `MODEL`: main Artha agent, portfolio synthesis, and deep-research orchestration defaults to `claude-sonnet-4-6`
 - `ANALYST_MODEL`: per-holding analyst sub-agents default to `claude-haiku-4-5`
 - `ANALYST_MAX_TOKENS`: lower output cap for company artifact generation
+- `ANALYST_MAX_SEARCHES`: max Tavily searches per analyst or deep-research holding, default `3`
 - `ANALYST_PARALLELISM`: max concurrent analyst refresh jobs, default `2`
 - `ANALYST_MIN_START_INTERVAL_SECONDS`: per-holding stagger used before analyst refresh starts, default `3`
 - `SUMMARY_MAX_TOKENS`: lower output cap for the final Sonnet summary

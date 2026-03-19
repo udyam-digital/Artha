@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     model: str = Field(default="claude-sonnet-4-6", alias="MODEL")
     analyst_model: str = Field(default="claude-haiku-4-5", alias="ANALYST_MODEL")
     analyst_max_tokens: int = Field(default=2500, alias="ANALYST_MAX_TOKENS")
+    analyst_max_searches: int = Field(default=3, alias="ANALYST_MAX_SEARCHES")
     analyst_parallelism: int = Field(default=2, alias="ANALYST_PARALLELISM")
     analyst_min_start_interval_seconds: float = Field(default=3.0, alias="ANALYST_MIN_START_INTERVAL_SECONDS")
     summary_max_tokens: int = Field(default=700, alias="SUMMARY_MAX_TOKENS")
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
     langfuse_base_url: str = Field(default="https://cloud.langfuse.com", alias="LANGFUSE_BASE_URL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
     kite_mcp_url: str = Field(default=DEFAULT_KITE_MCP_URL, alias="KITE_MCP_URL")
     kite_mcp_command: str = Field(default="", alias="KITE_MCP_COMMAND")
     kite_mcp_args: list[str] = Field(default_factory=list, alias="KITE_MCP_ARGS")
@@ -63,7 +65,14 @@ class Settings(BaseSettings):
         url = str(value).strip()
         return url or DEFAULT_KITE_MCP_URL
 
-    @field_validator("otel_exporter_otlp_endpoint", "langfuse_public_key", "langfuse_secret_key", "langfuse_base_url", mode="before")
+    @field_validator(
+        "otel_exporter_otlp_endpoint",
+        "langfuse_public_key",
+        "langfuse_secret_key",
+        "langfuse_base_url",
+        "tavily_api_key",
+        mode="before",
+    )
     @classmethod
     def parse_stripped_strings(cls, value: object) -> str:
         if value is None:

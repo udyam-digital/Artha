@@ -126,6 +126,12 @@ Analyze the stock deeply using:
 - Valuation
 - Timing
 - Capital efficiency
+- Use `tavily_search` to research this stock.
+- Maximum 3 searches.
+- Suggested queries:
+  1. `{ticker} latest quarterly results FY25`
+  2. `{ticker} screener.in fundamentals ROCE debt`
+  3. `{ticker} recent news management commentary 2025`
 
 STEP 2:
 Fill ALL fields properly.

@@ -11,7 +11,7 @@ from anthropic import AsyncAnthropic
 from config import Settings
 from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
 from snapshot_store import save_company_analysis_artifact
-from tools import get_web_search_tool_definition
+from tools import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 from usage_tracking import log_estimated_input_tokens, record_anthropic_usage
 
 
@@ -211,28 +211,68 @@ def _build_fallback_verdict(
     )
 
 
-def _materialize_tool_results(response: Any) -> list[dict[str, Any]]:
+def _materialize_tool_results(
+    response: Any,
+    *,
+    config: Settings,
+    search_budget_remaining: int,
+) -> tuple[list[dict[str, Any]], int]:
     tool_results: list[dict[str, Any]] = []
+    searches_used = 0
     for block in getattr(response, "content", []):
         if getattr(block, "type", None) != "tool_use":
             continue
-        # Native web_search is a server tool; this placeholder keeps the loop
-        # compatible with test doubles that expect a tool_result round-trip.
+        tool_name = getattr(block, "name", "")
+        if tool_name != "tavily_search":
+            payload = json.dumps({"error": f"Unsupported tool requested: {tool_name}"}, ensure_ascii=True)
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": payload,
+                    "is_error": True,
+                }
+            )
+            continue
+
+        if searches_used >= search_budget_remaining:
+            payload = json.dumps(
+                {"error": f"tavily_search budget exhausted; max {config.analyst_max_searches} searches allowed."},
+                ensure_ascii=True,
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": payload,
+                    "is_error": True,
+                }
+            )
+            continue
+
+        tool_input = getattr(block, "input", {}) or {}
+        try:
+            result = tavily_search(
+                query=str(tool_input["query"]),
+                max_results=int(tool_input.get("max_results", DEFAULT_TAVILY_MAX_RESULTS)),
+                settings=config,
+            )
+            payload = result
+            is_error = False
+            searches_used += 1
+        except Exception as exc:
+            payload = json.dumps({"error": str(exc)}, ensure_ascii=True)
+            is_error = True
+
         tool_results.append(
             {
                 "type": "tool_result",
                 "tool_use_id": block.id,
-                "content": json.dumps(
-                    {
-                        "acknowledged": True,
-                        "tool_name": getattr(block, "name", "web_search"),
-                        "tool_input": getattr(block, "input", {}),
-                    },
-                    ensure_ascii=True,
-                ),
+                "content": payload,
+                **({"is_error": True} if is_error else {}),
             }
         )
-    return tool_results
+    return tool_results, searches_used
 
 
 def _log_response_usage(
@@ -278,7 +318,12 @@ async def generate_company_artifact(
     logger.info("[%s] starting analysis", holding.tradingsymbol)
 
     user_prompt = (
-        "Analyse this Indian stock using web search and return exactly one valid JSON object only.\n"
+        f"Analyse this Indian stock using tavily_search and return exactly one valid JSON object only.\n"
+        f"You may call tavily_search at most {config.analyst_max_searches} times. "
+        "Prefer these queries in order if needed: "
+        f"'{holding.tradingsymbol} latest quarterly results FY25', "
+        f"'{holding.tradingsymbol} screener.in fundamentals ROCE debt', "
+        f"and '{holding.tradingsymbol} recent news management commentary 2025'.\n"
         "Input JSON:\n"
         + json.dumps(
             {
@@ -302,6 +347,7 @@ async def generate_company_artifact(
     )
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
+    searches_used = 0
 
     for iteration in range(1, MAX_ANALYST_ITERATIONS + 1):
         log_estimated_input_tokens(
@@ -314,7 +360,7 @@ async def generate_company_artifact(
             max_tokens=config.analyst_max_tokens,
             system=skills_content,
             messages=messages,
-            tools=[get_web_search_tool_definition()],
+            tools=[get_tavily_search_tool_definition(config)],
         )
         _log_response_usage(
             label=f"[{holding.tradingsymbol}] analyst",
@@ -335,7 +381,12 @@ async def generate_company_artifact(
 
         if stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": response.content})
-            tool_results = _materialize_tool_results(response)
+            tool_results, search_increment = _materialize_tool_results(
+                response,
+                config=config,
+                search_budget_remaining=max(config.analyst_max_searches - searches_used, 0),
+            )
+            searches_used += search_increment
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
             continue
@@ -391,7 +442,7 @@ async def analyse_stock(
     config: Settings,
 ) -> StockVerdict:
     """
-    Single-stock sub-agent. One focused Claude API call with web search.
+    Single-stock sub-agent. One focused Claude API call with Tavily-backed search.
     Returns StockVerdict. Never raises — returns StockVerdict with error field.
     """
     del portfolio_total_value

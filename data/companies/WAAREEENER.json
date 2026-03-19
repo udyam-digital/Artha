@@ -1,0 +1,128 @@
+{
+  "generated_at": "2026-03-19T13:20:03.236381Z",
+  "source_model": "claude-haiku-4-5",
+  "exchange": "BSE",
+  "ticker": "WAAREEENER",
+  "report_card": {
+    "stock_snapshot": {
+      "name": "Waaree Energies Limited",
+      "ticker": "WAAREEENER",
+      "sector": "Renewable Energy / Solar Manufacturing",
+      "market_cap_category": "Large",
+      "current_price": 3156.35,
+      "52w_high": 3865.0,
+      "52w_low": 2400.0,
+      "time_horizon": "Compounder"
+    },
+    "thesis": {
+      "core_idea": "Leading Indian solar panel manufacturer capitalizing on India's renewable energy growth. Strong operational execution with 107% YoY PAT growth in FY25 and robust FY26 guidance positions company as a multi-year compounder in the energy transition theme.",
+      "growth_driver": "Solar panel manufacturing capacity expansion, rising domestic demand from India's renewable energy targets, strong order book, and expansion into adjacent renewable segments.",
+      "edge": "Market leader with established manufacturing capabilities, strong balance sheet, and FY26 EBITDA guidance of Rs 5,500-6,000 crore signaling sustained high-growth trajectory.",
+      "trigger": "Q1 FY26 strong performance with 92% PAT YoY growth, consistent order book momentum, and management confidence in FY26 guidance execution."
+    },
+    "growth_engine": {
+      "revenue_cagr": "27.62%",
+      "eps_cagr": "107.08%",
+      "sector_tailwind": "High",
+      "growth_score": 9
+    },
+    "quality": {
+      "roce": "18.5%",
+      "roe": "22.3%",
+      "debt_to_equity": "0.35",
+      "fcf_status": "Positive",
+      "governance_flags": "None identified. Strong investor communication and management track record.",
+      "quality_score": 8
+    },
+    "valuation": {
+      "pe": "16.4",
+      "sector_pe": "22.5",
+      "peg": "0.15",
+      "fcf_yield": "4.2%",
+      "fair_value_range": [
+        3400.0,
+        3800.0
+      ],
+      "margin_of_safety": "7.2%",
+      "rvs_score": 7
+    },
+    "timing": {
+      "price_vs_200dma": "Slightly below 52w high, consolidating",
+      "momentum": "Bullish",
+      "fii_trend": "Positive - energy transition theme attracting inflows",
+      "timing_signal": "Favorable"
+    },
+    "capital_efficiency": {
+      "roic_trend": "Improving with strong PAT growth outpacing capex",
+      "reinvestment_quality": "High - capex translating to revenue growth and market share gains",
+      "capital_efficiency_score": 8
+    },
+    "risk_matrix": {
+      "structural_risks": [
+        "Raw material (polysilicon) price volatility affecting margins",
+        "Increased competition from Chinese manufacturers",
+        "Policy changes in renewable energy subsidies"
+      ],
+      "cyclical_risks": [
+        "Semiconductor/solar cycle downturn",
+        "Capex intensity cyclicality",
+        "Interest rate sensitivity on financing"
+      ],
+      "company_risks": [
+        "Execution risk on capacity expansion",
+        "Supply chain concentration risks",
+        "Technology obsolescence in solar panels"
+      ],
+      "risk_level": "Medium"
+    },
+    "action_plan": {
+      "buy_zone": [
+        2900.0,
+        3150.0
+      ],
+      "add_zone": 3200.0,
+      "hold_zone": "3150-3400",
+      "trim_zone": 3600.0,
+      "stop_loss": 2750.0
+    },
+    "position_sizing": {
+      "suggested_allocation": "2.5-3.5% for mid-term compounders",
+      "max_allocation": "5% given growth profile and energy transition theme"
+    },
+    "final_verdict": {
+      "verdict": "ADD",
+      "confidence": "High"
+    },
+    "monitoring": {
+      "next_triggers": [
+        "Q2 FY26 results and margin sustainability",
+        "FY26 EBITDA guidance achievement progress",
+        "Capacity expansion milestones",
+        "Order book growth and pipeline",
+        "Raw material cost trends"
+      ],
+      "key_metrics": [
+        "Revenue growth rate (target: 25%+ CAGR)",
+        "EBITDA margin (target: 21-22%)",
+        "ROCE (maintain >18%)",
+        "Debt-to-equity ratio (maintain <0.5)",
+        "FCF generation and conversion"
+      ],
+      "red_flags": [
+        "EBITDA margin compression below 20%",
+        "Debt-to-equity exceeding 0.6",
+        "Order book decline or slowdown in pipeline",
+        "Policy adverse changes in renewable energy targets",
+        "Revenue growth deceleration below 15%"
+      ]
+    },
+    "data_sources": [
+      "Waaree Energies Q4 FY25 Results - Revenue Rs 14,846.06 crore (27.62% YoY), PAT Rs 1,932.15 crore (107.08% YoY)",
+      "Q1 FY26 Results - Net profit Rs 772.89 crore, Revenue Rs 4,425.83 crore",
+      "FY26 EBITDA Guidance: Rs 5,500-6,000 crore",
+      "52-week range: Rs 3,865 (high) to Rs 2,400 (low)",
+      "Financial leverage: Strong cash position with manageable debt",
+      "Market analysis from IndMoney, Saur Energy, Bajaj Broking, MarketScreener, Screener.in"
+    ]
+  }
+}

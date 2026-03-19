@@ -46,7 +46,8 @@ class ArthaAgent:
             return snapshot_context + (
                 f"Run a single-stock deep dive for {ticker.upper()} from the live Kite portfolio. "
                 "Use kite_get_portfolio to find the holding and kite_get_price_history for price context. "
-                "Use web_search extensively to research the company with recent, source-cited coverage across "
+                f"Use tavily_search up to {self.settings.analyst_max_searches} times to research the company with "
+                "recent, source-cited coverage across "
                 "Screener, investor presentations, concalls, results coverage, and relevant news. "
                 "Do not create meaningful rebalancing actions; return an empty or HOLD-only rebalancing_actions list. "
                 "Return the final answer as JSON wrapped in <artha_report>...</artha_report> tags."
@@ -54,8 +55,9 @@ class ArthaAgent:
 
         return snapshot_context + (
             "Analyze the live Indian equity portfolio from Kite. Start by calling kite_get_portfolio. "
-            "For every non-passive equity holding, perform broad web_search-based research before concluding. "
-            "Use kite_get_price_history for price context where helpful, and use web_search extensively for holdings "
+            "For every non-passive equity holding, perform broad tavily_search-based research before concluding. "
+            f"Use kite_get_price_history for price context where helpful, and use tavily_search up to "
+            f"{self.settings.analyst_max_searches} times per holding for holdings "
             "research with recent, source-cited coverage across Screener, investor presentations, concalls, results, "
             "and relevant sector or company news. "
             "Exclude LIQUIDBEES, NIFTYBEES, GOLDCASE, and SILVERCASE from equity rebalancing actions, but keep them "
@@ -171,8 +173,8 @@ class ArthaAgent:
                     for block in response.content:
                         if getattr(block, "type", None) != "tool_use":
                             continue
-                        if block.name == "web_search":
-                            logger.info("Artha researching via web_search")
+                        if block.name == "tavily_search":
+                            logger.info("Artha researching via tavily_search")
                         elif block.name == "kite_get_price_history":
                             logger.info(
                                 "Artha researching price history for %s",

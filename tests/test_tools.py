@@ -1,16 +1,20 @@
 import asyncio
+from types import ModuleType
 from pathlib import Path
 
 from config import Settings
 from tools import (
+    DEFAULT_TAVILY_MAX_RESULTS,
     MCPServerDefinition,
     ToolExecutionError,
     _holding_market_value,
     extract_auth_url,
+    get_tavily_search_tool_definition,
     kite_get_price_history,
     load_kite_server_definition,
     profile_requires_login,
     save_kite_artifact,
+    tavily_search,
 )
 
 
@@ -123,3 +127,46 @@ def test_kite_get_price_history_raises_on_empty_history() -> None:
         assert "No historical data available" in str(exc)
     else:
         raise AssertionError("Expected ToolExecutionError for empty historical data")
+
+
+def test_get_tavily_search_tool_definition_uses_configured_budget() -> None:
+    settings = Settings(ANTHROPIC_API_KEY="test-key", ANALYST_MAX_SEARCHES=4)
+    tool = get_tavily_search_tool_definition(settings)
+    assert tool["name"] == "tavily_search"
+    assert "4 searches" in tool["description"]
+    assert tool["input_schema"]["properties"]["max_results"]["default"] == DEFAULT_TAVILY_MAX_RESULTS
+
+
+def test_tavily_search_formats_summary_and_results(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+
+        def search(self, **kwargs):
+            assert kwargs["search_depth"] == "basic"
+            assert kwargs["max_results"] == 2
+            return {
+                "answer": "Short answer",
+                "results": [
+                    {
+                        "title": "Result 1",
+                        "content": "A" * 450,
+                        "url": "https://example.com/1",
+                    },
+                    {
+                        "title": "Result 2",
+                        "content": "B" * 50,
+                        "url": "https://example.com/2",
+                    },
+                ],
+            }
+
+    fake_module = ModuleType("tavily")
+    fake_module.TavilyClient = FakeClient
+    monkeypatch.setitem(__import__("sys").modules, "tavily", fake_module)
+    settings = Settings(ANTHROPIC_API_KEY="test-key", TAVILY_API_KEY="tvly-test")
+    result = tavily_search("KPIT results", max_results=2, settings=settings)
+    assert "Summary: Short answer" in result
+    assert "[Result 1]" in result
+    assert "https://example.com/1" in result
+    assert "..." in result

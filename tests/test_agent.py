@@ -18,22 +18,22 @@ def make_settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_tool_definitions_include_native_web_search(tmp_path: Path) -> None:
+def test_tool_definitions_include_tavily_search(tmp_path: Path) -> None:
     agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
     tool_names = [tool["name"] for tool in agent.tools]
     assert tool_names == [
         "kite_get_portfolio",
         "kite_get_price_history",
-        "web_search",
+        "tavily_search",
     ]
-    assert next(tool for tool in agent.tools if tool["name"] == "web_search")["type"] == "web_search_20250305"
+    assert "type" not in next(tool for tool in agent.tools if tool["name"] == "tavily_search")
 
 
 def test_full_run_prompt_requires_deep_research(tmp_path: Path) -> None:
     agent = ArthaAgent(settings=make_settings(tmp_path), client=object())  # type: ignore[arg-type]
     prompt = agent._build_user_prompt()
     assert "For every non-passive equity holding" in prompt
-    assert "web_search extensively" in prompt
+    assert "use tavily_search up to 3 times per holding" in prompt.lower()
 
 
 def test_parse_final_output_falls_back_without_tags(tmp_path: Path) -> None:

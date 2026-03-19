@@ -1,0 +1,126 @@
+{
+  "generated_at": "2026-03-19T13:18:45.185329Z",
+  "source_model": "claude-haiku-4-5",
+  "exchange": "NSE",
+  "ticker": "INDIAMART",
+  "report_card": {
+    "stock_snapshot": {
+      "name": "IndiaMART InterMESH Limited",
+      "ticker": "INDIAMART",
+      "sector": "B2B E-commerce",
+      "market_cap_category": "Mid",
+      "current_price": 2029.0,
+      "52w_high": 2550.0,
+      "52w_low": 1650.0,
+      "time_horizon": "Compounder"
+    },
+    "thesis": {
+      "core_idea": "IndiaMART is India's leading B2B e-commerce marketplace with strong unit economics, consistent profitability, and significant growth runway in SME digitization",
+      "growth_driver": "B2B marketplace consolidation, increasing supplier realization, merchant growth, and expansion in smaller cities",
+      "edge": "First-mover advantage in B2B space, strong supplier network, superior ROCE >15%, low debt, and improving profitability margins",
+      "trigger": "Sustained margin expansion, acceleration in supplier growth, and potential path to 20%+ EPS growth as marketplace matures"
+    },
+    "growth_engine": {
+      "revenue_cagr": "18-20%",
+      "eps_cagr": "22-25%",
+      "sector_tailwind": "High",
+      "growth_score": 7
+    },
+    "quality": {
+      "roce": "16-17%",
+      "roe": "18-20%",
+      "debt_to_equity": "0.08-0.12",
+      "fcf_status": "Positive",
+      "governance_flags": "None identified",
+      "quality_score": 8
+    },
+    "valuation": {
+      "pe": "11.2",
+      "sector_pe": "28-32",
+      "peg": "0.48-0.52",
+      "fcf_yield": "4.2-4.8%",
+      "fair_value_range": [
+        2400.0,
+        2650.0
+      ],
+      "margin_of_safety": "Moderate discount; entry opportunity as stock corrected 13% from entry",
+      "rvs_score": 8
+    },
+    "timing": {
+      "price_vs_200dma": "Trading below 200-day moving average; technical weakness post recent sell-off",
+      "momentum": "Bearish",
+      "fii_trend": "Mixed; analyst downgrades noted but fundamentals remain intact",
+      "timing_signal": "Risky"
+    },
+    "capital_efficiency": {
+      "roic_trend": "Stable and improving, with consistent returns above cost of capital",
+      "reinvestment_quality": "High; company reinvests profits efficiently into platform expansion and technology",
+      "capital_efficiency_score": 8
+    },
+    "risk_matrix": {
+      "structural_risks": [
+        "Competitive threat from larger e-commerce players entering B2B",
+        "Regulatory changes in e-commerce sector",
+        "Market saturation in organized B2B space"
+      ],
+      "cyclical_risks": [
+        "SME credit cycles affecting customer spending",
+        "Economic slowdown impacting B2B transactions"
+      ],
+      "company_risks": [
+        "Recent analyst downgrade to 'sell' citing technical weakness",
+        "Flat H1 FY26 performance indicates slowdown",
+        "Execution risk on margin expansion targets"
+      ],
+      "risk_level": "Medium"
+    },
+    "action_plan": {
+      "buy_zone": [
+        1850.0,
+        2050.0
+      ],
+      "add_zone": 1750.0,
+      "hold_zone": "2050-2250",
+      "trim_zone": 2500.0,
+      "stop_loss": 1650.0
+    },
+    "position_sizing": {
+      "suggested_allocation": "8-10% of portfolio (currently 10.42% - slight overweight)",
+      "max_allocation": "12%"
+    },
+    "final_verdict": {
+      "verdict": "HOLD",
+      "confidence": "Medium"
+    },
+    "monitoring": {
+      "next_triggers": [
+        "Q4 FY25 and H1 FY26 growth acceleration",
+        "Margin expansion trajectory toward 20% net profit margin",
+        "Supplier growth and GMV acceleration",
+        "Price recovery toward 2400-2650 fair value range",
+        "Resolution of analyst sentiment vs. fundamental strength"
+      ],
+      "key_metrics": [
+        "GMV growth trajectory",
+        "Supplier count and realization trends",
+        "Operating margin progression",
+        "FCF generation and capital allocation",
+        "ROCE sustainability above 15%"
+      ],
+      "red_flags": [
+        "Further margin compression or profitability slowdown",
+        "Competitive intensity impacting supplier economics",
+        "Deceleration in GMV growth below 15%",
+        "Continued analyst downgrades",
+        "Inability to sustain ROCE above 15%"
+      ]
+    },
+    "data_sources": [
+      "ET Retail - Q4 FY25 Results Analysis",
+      "Screener.in - Fundamentals (ROCE, Debt metrics)",
+      "MarketsMojo - Recent news and analyst commentary",
+      "TipRanks - Company announcements",
+      "Portfolio allocation data provided"
+    ]
+  }
+}

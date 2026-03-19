@@ -1,0 +1,133 @@
+{
+  "generated_at": "2026-03-19T13:18:52.960860Z",
+  "source_model": "claude-haiku-4-5",
+  "exchange": "BSE",
+  "ticker": "IGIL",
+  "report_card": {
+    "stock_snapshot": {
+      "name": "International Gemmological Institute (India) Ltd",
+      "ticker": "IGIL",
+      "sector": "Commercial Services / Testing & Certification",
+      "market_cap_category": "Small",
+      "current_price": 337.65,
+      "52w_high": 580.0,
+      "52w_low": 280.0,
+      "time_horizon": "Compounder"
+    },
+    "thesis": {
+      "core_idea": "IGIL is a specialized gemstone certification company with strong profitability, minimal debt, and consistent growth trajectory. The company operates in a niche but essential market with high margins and capital efficiency.",
+      "growth_driver": "Rising jewelry demand globally, expansion in gemstone certification services, operational leverage from scale, and management's 15-20% revenue growth guidance for 2025.",
+      "edge": "Market leader in gemstone certification in India with near-monopolistic characteristics, debt-free balance sheet, high ROCE (>30%), consistent dividend payouts, and sticky customer base.",
+      "trigger": "Continued execution on 15-20% growth guidance, expansion into new geographies, margin improvement through operational leverage, and sustained dividend growth signaling management confidence."
+    },
+    "growth_engine": {
+      "revenue_cagr": "18-20%",
+      "eps_cagr": "15-18%",
+      "sector_tailwind": "High",
+      "growth_score": 8
+    },
+    "quality": {
+      "roce": "32-35%",
+      "roe": "28-32%",
+      "debt_to_equity": "0.0",
+      "fcf_status": "Positive",
+      "governance_flags": "None identified; transparent management commentary, regular dividend distribution.",
+      "quality_score": 9
+    },
+    "valuation": {
+      "pe": "45-50",
+      "sector_pe": "25-30",
+      "peg": "2.3-2.7",
+      "fcf_yield": "2.5-3.0%",
+      "fair_value_range": [
+        280.0,
+        420.0
+      ],
+      "margin_of_safety": "Moderate - stock at 337.65 is 20% below intrinsic value estimate; significant downside risk from entry price of 522.625.",
+      "rvs_score": 6
+    },
+    "timing": {
+      "price_vs_200dma": "Traded at 522.625 average entry; currently 35% lower at 337.65 - indicates oversold conditions or negative momentum correction.",
+      "momentum": "Bearish",
+      "fii_trend": "Unknown from available data; requires monitoring for FII buying patterns.",
+      "timing_signal": "Risky"
+    },
+    "capital_efficiency": {
+      "roic_trend": "Consistently strong at 30%+ levels; minimal capex requirements support high cash generation.",
+      "reinvestment_quality": "High - company generates cash efficiently and deploys capital through dividends and potential growth investments.",
+      "capital_efficiency_score": 9
+    },
+    "risk_matrix": {
+      "structural_risks": [
+        "Niche market concentration risk - dependent on jewelry industry health",
+        "Geographic concentration - primarily India-focused operations",
+        "Competition from international certification bodies in emerging markets"
+      ],
+      "cyclical_risks": [
+        "Jewelry demand sensitivity to consumer discretionary spending and economic cycles",
+        "Gold price and precious metal price volatility affecting transaction volumes",
+        "Seasonal demand variations"
+      ],
+      "company_risks": [
+        "Key person risk - Managing Director/CEO critical to strategy",
+        "Valuation risk - trading at 45-50x PE vs sector 25-30x PE",
+        "Execution risk on 15-20% growth guidance in uncertain macro environment",
+        "Significant shareholder loss - 35% drawdown from entry price indicates prior momentum collapse"
+      ],
+      "risk_level": "Medium"
+    },
+    "action_plan": {
+      "buy_zone": [
+        300.0,
+        350.0
+      ],
+      "add_zone": 360.0,
+      "hold_zone": "350-420",
+      "trim_zone": 450.0,
+      "stop_loss": 280.0
+    },
+    "position_sizing": {
+      "suggested_allocation": "3-5% of portfolio given high quality but elevated valuation and momentum concerns",
+      "max_allocation": "8%"
+    },
+    "final_verdict": {
+      "verdict": "HOLD",
+      "confidence": "Medium"
+    },
+    "monitoring": {
+      "next_triggers": [
+        "Q3 FY25 results and management guidance confirmation",
+        "Revenue growth tracking against 15-20% guidance for CY2025",
+        "Dividend announcement and payout ratio trends",
+        "Price recovery above 420 level for technical breakout",
+        "FII buying patterns and institutional accumulation",
+        "New service launches or geographic expansion announcements"
+      ],
+      "key_metrics": [
+        "Quarterly revenue growth rate targeting 15-20%",
+        "EBITDA margin sustainability",
+        "ROCE maintenance above 30%",
+        "Dividend payout ratio and per-share amounts",
+        "Working capital efficiency metrics",
+        "Free cash flow generation"
+      ],
+      "red_flags": [
+        "Revenue growth slipping below 12% quarterly",
+        "ROCE declining below 25%",
+        "EBITDA margin compression",
+        "Dividend cut announcement",
+        "Key management departure",
+        "Price closing below 280"
+      ]
+    },
+    "data_sources": [
+      "MSN Finance IGIL earnings history",
+      "Angel One Q1 FY25 results",
+      "Moneycontrol quarterly analysis",
+      "Screener.in fundamental metrics",
+      "Trendlyne management guidance",
+      "SimplyWall.st stock overview",
+      "ScanX Q3 performance data"
+    ]
+  }
+}

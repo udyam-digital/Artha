@@ -142,7 +142,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     tool_use_response = SimpleNamespace(
         stop_reason="tool_use",
         content=[
-            SimpleNamespace(type="tool_use", id="tool-1", name="web_search", input={"query": "KPIT results"})
+            SimpleNamespace(type="tool_use", id="tool-1", name="tavily_search", input={"query": "KPIT results"})
         ],
     )
     final_response = SimpleNamespace(
@@ -156,6 +156,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     )
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("analyst.tavily_search", lambda **kwargs: "Summary: KPIT result")
     verdict = await analyse_stock(
         holding=make_holding(),
         portfolio_total_value=10_000.0,
@@ -170,6 +171,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
     assert (tmp_path / "companies" / "KPITTECH.json").exists()
+    assert "tavily_search" == tool_use_response.content[0].name
 
 
 async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
@@ -384,3 +386,31 @@ async def test_analyse_stock_repairs_invalid_json_with_followup_turn(tmp_path: P
     assert verdict.verdict == "BUY"
     assert verdict.error is None
     assert len(client.calls) == 2
+
+
+async def test_analyse_stock_enforces_tavily_search_budget(tmp_path: Path) -> None:
+    tool_uses = [
+        SimpleNamespace(type="tool_use", id=f"tool-{index}", name="tavily_search", input={"query": f"KPIT {index}"})
+        for index in range(1, 5)
+    ]
+    tool_use_response = SimpleNamespace(stop_reason="tool_use", content=tool_uses)
+    final_response = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
+    )
+    client = FakeAnthropicClient([tool_use_response, final_response])
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("analyst.tavily_search", lambda **kwargs: f"Summary: {kwargs['query']}")
+    await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={},
+        skills_content="system",
+        client=client,  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    tool_results = client.calls[1]["messages"][-1]["content"]
+    assert len(tool_results) == 4
+    assert tool_results[-1]["is_error"] is True
+    assert "budget exhausted" in tool_results[-1]["content"]
+    monkeypatch.undo()

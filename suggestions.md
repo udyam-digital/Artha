@@ -176,6 +176,7 @@ These recommendations position Artha as a world-class AI-powered portfolio analy
 - Track orchestrator-level counters for analyzed equities, excluded ETFs, MF holdings, analyst failures, and total synthesis time.
 - Add a lightweight timing breakdown to the saved report payload or sidecar artifact so portfolio sync, price-context fetch, analyst fan-out, and final synthesis can be compared over time.
 - Per-call Anthropic usage now belongs in a JSONL ledger. Keep building on that by adding a tiny rollup script or notebook that groups cost by command, ticker, model, and prompt phase so optimization work is driven by real spend, not intuition.
+- Rename or extend the legacy `web_search_requests` usage fields now that Tavily backs research. The current ledger still accurately captures Anthropic token cost, but it no longer reflects external search volume or Tavily spend, so the next observability improvement is a provider-agnostic search metric plus Tavily request accounting.
 
 ### Research Quality
 - Add source-domain ranking for analyst sub-agents so exchange filings, investor presentations, earnings releases, and Screener evidence are preferred over generic market-news summaries.

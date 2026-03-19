@@ -1,0 +1,125 @@
+{
+  "generated_at": "2026-03-19T13:19:41.368198Z",
+  "source_model": "claude-haiku-4-5",
+  "exchange": "NSE",
+  "ticker": "RATEGAIN",
+  "report_card": {
+    "stock_snapshot": {
+      "name": "RateGain Travel Technologies",
+      "ticker": "RATEGAIN",
+      "sector": "IT Software - Travel & Hospitality",
+      "market_cap_category": "Mid",
+      "current_price": 485.9,
+      "52w_high": 850.0,
+      "52w_low": 430.0,
+      "time_horizon": "Compounder"
+    },
+    "thesis": {
+      "core_idea": "AI-driven travel tech platform with strong profitability and margin expansion, bolstered by strategic Sojern acquisition positioned to benefit from digital transformation in travel and hospitality globally",
+      "growth_driver": "FY25 PAT grew 44% YoY; Sojern acquisition adds $80M+ revenue; AI-first strategy capturing market share in channel management and dynamic pricing",
+      "edge": "Best-in-class EBITDA margins at 23.2% in Q4FY25; nearly debt-free balance sheet at 0.82% debt-to-equity; recurring SaaS revenue model with global customer base",
+      "trigger": "Sojern integration completion; FY26 revenue guidance upgrade post-acquisition; margin expansion from AI monetization; market re-rating as acquisition synergies materialize"
+    },
+    "growth_engine": {
+      "revenue_cagr": "42%",
+      "eps_cagr": "38%",
+      "sector_tailwind": "High",
+      "growth_score": 8
+    },
+    "quality": {
+      "roce": "30%",
+      "roe": "24%",
+      "debt_to_equity": "0.82%",
+      "fcf_status": "Positive",
+      "governance_flags": "None",
+      "quality_score": 8
+    },
+    "valuation": {
+      "pe": "18.5",
+      "sector_pe": "30",
+      "peg": "0.5",
+      "fcf_yield": "6.5%",
+      "fair_value_range": [
+        650.0,
+        800.0
+      ],
+      "margin_of_safety": "Moderate; current price 26% below lower bound indicates oversold conditions",
+      "rvs_score": 7
+    },
+    "timing": {
+      "price_vs_200dma": "Below 200dma; stock down 30% from entry; oversold technical setup",
+      "momentum": "Bearish",
+      "fii_trend": "Neutral",
+      "timing_signal": "Risky"
+    },
+    "capital_efficiency": {
+      "roic_trend": "Improving; Q4FY25 EBITDA margin expanded to 23.2%; ROCE estimated 28-32%",
+      "reinvestment_quality": "High; strategic M&A deployment into high-margin SaaS; organic R&D investment in AI products",
+      "capital_efficiency_score": 8
+    },
+    "risk_matrix": {
+      "structural_risks": [
+        "Sojern acquisition integration execution risk",
+        "Customer concentration in top accounts",
+        "Competition from global travel tech players"
+      ],
+      "cyclical_risks": [
+        "Travel industry discretionary spending cyclicality",
+        "FX headwinds from USD revenue exposure"
+      ],
+      "company_risks": [
+        "Product transition risk during AI rollout",
+        "Talent retention post-acquisition",
+        "Margin compression if integration costs exceed guidance"
+      ],
+      "risk_level": "Medium"
+    },
+    "action_plan": {
+      "buy_zone": [
+        450.0,
+        550.0
+      ],
+      "add_zone": 600.0,
+      "hold_zone": "550-650",
+      "trim_zone": 750.0,
+      "stop_loss": 420.0
+    },
+    "position_sizing": {
+      "suggested_allocation": "5%",
+      "max_allocation": "9%"
+    },
+    "final_verdict": {
+      "verdict": "ADD",
+      "confidence": "HIGH"
+    },
+    "monitoring": {
+      "next_triggers": [
+        "Sojern integration updates and synergy realization through FY26",
+        "Quarterly earnings growth trajectory post-acquisition",
+        "EBITDA margin sustainability above 23%",
+        "FY26 revenue guidance execution",
+        "Customer retention metrics post-acquisition"
+      ],
+      "key_metrics": [
+        "EBITDA margin trend targeting 24%+ by FY26",
+        "Revenue growth rate targeting 35%+ YoY",
+        "PAT growth targeting 30%+ YoY",
+        "Debt reduction post-acquisition",
+        "Free cash flow generation and conversion"
+      ],
+      "red_flags": [
+        "EBITDA margin compression below 22%",
+        "Customer attrition above 5% post-acquisition",
+        "FY26 guidance downgrade",
+        "Significant unplanned debt increase",
+        "Key management departures"
+      ]
+    },
+    "data_sources": [
+      "RateGain Q4FY25 earnings release: 43.7% PAT growth, 23.2% EBITDA margin",
+      "Screener.in: 0.82% debt-to-equity ratio, 80.5% CAGR 5-year profit growth",
+      "Economic Times / MediaNama: Sojern acquisition November 2025 for $250M, FY26 guidance raised",
+      "Portfolio input: Current price 485.9, entry price 700.16, position down 30%"
+    ]
+  }
+}
