@@ -108,13 +108,45 @@ Notes:
 
 ## Skill Usage
 
-- Check `.github/skills/` for relevant repo-local `SKILL.md` guidance before doing substantial implementation, testing, verification, or review work.
+- Before doing substantial implementation, testing, verification, review, or documentation work, scan `.github/skills/` and register the currently available repo-local skills for the task at hand.
+- Maintain awareness of the full repo-local skill inventory and use every skill that is relevant to the current task. Do not load unrelated skills just because they exist.
 - If a matching local skill exists, follow it unless it conflicts with higher-priority instructions in this file.
-- Prefer the narrowest relevant skill rather than loading every skill.
+- Prefer the narrowest set of relevant skills that fully covers the task.
+- When the task involves improving repository guidance, developer workflow, Copilot setup, agent configuration, or missing repo automation, explicitly consider the three suggestor skills:
+  - `.github/skills/suggest-awesome-github-copilot-skills/`
+  - `.github/skills/suggest-awesome-github-copilot-agents/`
+  - `.github/skills/suggest-awesome-github-copilot-instructions/`
+- Use the suggestor skills to identify missing or outdated skills, custom agents, and custom instructions. Do not install or update suggested assets unless explicitly requested.
 - Typical cases:
   - use `.github/skills/pytest-coverage/` when changing tested Python behavior or adding coverage
   - use `.github/skills/doublecheck/` before finalizing non-trivial changes that need a verification pass
+  - use `.github/skills/create-readme/` when README changes are needed
+  - use `.github/skills/conventional-commit/` when preparing commit messages or commit hygiene guidance
+  - use `.github/skills/dependabot/` when changing dependency update policy or repo maintenance automation
+  - use `.github/skills/eval-driven-dev/` when designing evaluation-oriented development loops
+  - use `.github/skills/gh-cli/` when repo automation depends on GitHub CLI workflows
+  - use `.github/skills/python-mcp-server-generator/` when adding or restructuring Python MCP server behavior
+  - use `.github/skills/sql-optimization/` when query design or SQL performance becomes relevant
 - Treat repo-local skills as execution guidance for this codebase, not just reference material.
+
+### Current Repo-Local Skill Registry
+
+Current skills available under `.github/skills/`:
+
+- `conventional-commit`
+- `create-readme`
+- `dependabot`
+- `doublecheck`
+- `eval-driven-dev`
+- `gh-cli`
+- `pytest-coverage`
+- `python-mcp-server-generator`
+- `sql-optimization`
+- `suggest-awesome-github-copilot-agents`
+- `suggest-awesome-github-copilot-instructions`
+- `suggest-awesome-github-copilot-skills`
+
+Refresh this registry whenever the contents of `.github/skills/` change so the instructions remain accurate.
 
 ## Test Commands
 
@@ -160,8 +192,9 @@ Focused test runs:
 - Prefer small, test-backed changes over prompt-only fixes when the issue is deterministic.
 - Do not remove existing fallbacks unless you replace them with stricter, tested behavior.
 
+## Always Use
 
-Always USE-
-- Always use context7 mcp, and locally save responses and always be context aware, and keep updating it.
-- Make a suggestions.md file, where you give your suggestions and give these Like an expert Gen Ai Architect
-- Always Update README.md so it shows exactly what we have currently 
+- Use Context7 when current library, framework, or API documentation is relevant. Save useful findings locally when they materially inform implementation or maintenance decisions.
+- Stay context-aware across the repo. Reconcile changes with existing architecture, prompts, tools, tests, and persisted artifacts before editing behavior.
+- Maintain a `suggestions.md` file with practical recommendations written from a senior GenAI architect perspective. Keep it current when new gaps, upgrades, or repo improvements are identified.
+- Keep `README.md` aligned with the current repository behavior, setup, commands, and capabilities whenever a change makes the existing README inaccurate.
