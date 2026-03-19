@@ -78,7 +78,7 @@ Supported flows:
 - `kite-login`: authenticate a live hosted Kite MCP session in the browser
 - `kite-sync`: fetch fresh equity and MF snapshots and persist them locally
 - `rebalance`: generate a math-only rebalancing report from the latest saved local equity snapshot, with no LLM call
-- `run`: checks Kite session, fetches fresh equity and MF snapshots, persists them locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
+- `run`: reuses today's saved Kite equity and MF snapshots if they already exist locally; otherwise it performs one fresh Kite sync for the day, persists the snapshots locally, reuses fresh company-analysis artifacts from `data/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
 - `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/companies/KPITTECH.json` as needed
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
@@ -105,6 +105,7 @@ Observability and tracing:
 `run` now uses a verdict-driven orchestrator:
 
 1. Sync live equity holdings, MF holdings, cash, and profile from Kite
+   If today's snapshots already exist locally, reuse them and skip a fresh hosted Kite login/sync
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch one compact price-history summary once per analyzable equity holding: `52w_high`, `52w_low`, `current_vs_52w_high_pct`, `price_1y_ago`, `price_change_1y_pct`
 4. Check `data/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`

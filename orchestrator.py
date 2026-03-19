@@ -10,14 +10,14 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic
 
-from company_analysis import get_company_artifact_and_verdict
+from company_analysis import get_company_artifact_and_verdict, is_company_artifact_fresh
 from config import Settings
-from kite_runtime import KiteSyncResult, build_kite_client, sync_kite_data
+from kite_runtime import KiteSyncResult, build_kite_client, sync_kite_data, sync_kite_data_with_client
 from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
 from reliability import FullRunFailed, RetryFailure, run_with_retries
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
-from snapshot_store import company_analysis_path
-from tools import kite_get_price_history
+from snapshot_store import company_analysis_path, load_company_analysis_artifact
+from tools import ToolExecutionError, kite_get_price_history
 from usage_tracking import log_estimated_input_tokens, record_anthropic_usage, record_run_error
 
 
@@ -84,12 +84,13 @@ async def _price_contexts(
     *,
     settings: Settings,
     holdings: list[Holding],
+    kite_client: object | None = None,
 ) -> dict[str, dict[str, float | str]]:
-    async with build_kite_client(settings) as kite_client:
-        async def fetch_for_holding(holding: Holding) -> dict[str, float | str]:
+    async def fetch_for_holding(active_kite_client: object, holding: Holding) -> dict[str, float | str]:
+        try:
             return await run_with_retries(
                 lambda: kite_get_price_history(
-                    kite_client,
+                    active_kite_client,
                     tradingsymbol=holding.tradingsymbol,
                     instrument_token=holding.instrument_token,
                 ),
@@ -98,9 +99,44 @@ async def _price_contexts(
                 phase="price_history",
                 ticker=holding.tradingsymbol,
             )
+        except RetryFailure as exc:
+            if isinstance(exc.cause, ToolExecutionError) and "No historical data available" in str(exc.cause):
+                logger.warning(
+                    "[%s] price history unavailable; continuing with reduced context",
+                    holding.tradingsymbol,
+                )
+                return _default_price_context()
+            raise
 
-        results = await asyncio.gather(*[fetch_for_holding(holding) for holding in holdings])
+    if kite_client is None:
+        async with build_kite_client(settings) as owned_kite_client:
+            results = await asyncio.gather(*[fetch_for_holding(owned_kite_client, holding) for holding in holdings])
+    else:
+        results = await asyncio.gather(*[fetch_for_holding(kite_client, holding) for holding in holdings])
     return {holding.tradingsymbol: result for holding, result in zip(holdings, results, strict=True)}
+
+
+def _default_price_context() -> dict[str, float]:
+    return {
+        "52w_high": 0.0,
+        "52w_low": 0.0,
+        "current_vs_52w_high_pct": 0.0,
+        "price_1y_ago": 0.0,
+        "price_change_1y_pct": 0.0,
+    }
+
+
+def _holding_requires_refresh(*, holding: Holding, settings: Settings) -> bool:
+    try:
+        cached = load_company_analysis_artifact(holding.tradingsymbol, settings=settings)
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return True
+    return not (
+        cached.ticker.upper() == holding.tradingsymbol.upper()
+        and is_company_artifact_fresh(artifact=cached, settings=settings)
+    )
 
 
 async def _build_portfolio_summary(
@@ -161,6 +197,7 @@ async def _build_portfolio_summary(
 async def run_full_analysis(
     settings: Settings,
     progress_callback: Callable[[int, int, StockVerdict], None] | None = None,
+    sync_result: KiteSyncResult | None = None,
 ) -> PortfolioReport:
     """
     Orchestrates the full Artha pipeline:
@@ -173,39 +210,40 @@ async def run_full_analysis(
     7. Return PortfolioReport
     """
     started = time.perf_counter()
-    try:
-        sync_result = await run_with_retries(
-            lambda: sync_kite_data(settings=settings),
-            attempts=settings.transient_retry_attempts,
-            base_delay_seconds=settings.transient_retry_base_delay_seconds,
-            phase="kite_sync",
-        )
-    except RetryFailure as exc:
-        error_path = record_run_error(
-            settings=settings,
-            phase=exc.phase,
-            error=exc.cause,
-            retries_used=exc.retries_used,
-            ticker=exc.ticker,
-            partial_artifact_path=exc.partial_artifact_path,
-        )
-        raise FullRunFailed(
-            phase=exc.phase,
-            message=str(exc.cause),
-            retries_used=exc.retries_used,
-            ticker=exc.ticker,
-            error_log_path=error_path,
-            partial_artifact_path=exc.partial_artifact_path,
-        ) from exc
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     skills_content = _load_analyst_prompt()
-    equity_holdings = [
-        holding
-        for holding in sync_result.portfolio_snapshot.holdings
-        if holding.tradingsymbol not in PASSIVE_INSTRUMENTS
-    ]
+    price_context_by_symbol: dict[str, dict[str, float | str]] = {}
+
     try:
-        price_context_by_symbol = await _price_contexts(settings=settings, holdings=equity_holdings)
+        if sync_result is None:
+            async with build_kite_client(settings) as kite_client:
+                sync_result = await run_with_retries(
+                    lambda: sync_kite_data_with_client(kite_client, settings=settings),
+                    attempts=settings.transient_retry_attempts,
+                    base_delay_seconds=settings.transient_retry_base_delay_seconds,
+                    phase="kite_sync",
+                )
+                equity_holdings = [
+                    holding
+                    for holding in sync_result.portfolio_snapshot.holdings
+                    if holding.tradingsymbol not in PASSIVE_INSTRUMENTS
+                ]
+                holdings_needing_context = [
+                    holding for holding in equity_holdings if _holding_requires_refresh(holding=holding, settings=settings)
+                ]
+                if holdings_needing_context:
+                    price_context_by_symbol = await _price_contexts(
+                        settings=settings,
+                        holdings=holdings_needing_context,
+                        kite_client=kite_client,
+                    )
+        else:
+            equity_holdings = [
+                holding
+                for holding in sync_result.portfolio_snapshot.holdings
+                if holding.tradingsymbol not in PASSIVE_INSTRUMENTS
+            ]
+            logger.info("Using saved same-day Kite snapshots; skipping fresh sync and price-history fetch.")
     except RetryFailure as exc:
         error_path = record_run_error(
             settings=settings,
@@ -234,7 +272,7 @@ async def run_full_analysis(
             _, verdict, from_cache = await run_with_retries(
                 lambda: get_company_artifact_and_verdict(
                     holding=holding,
-                    price_context=price_context_by_symbol.get(holding.tradingsymbol, {}),
+                    price_context=price_context_by_symbol.get(holding.tradingsymbol, _default_price_context()),
                     skills_content=skills_content,
                     client=client,
                     settings=settings,

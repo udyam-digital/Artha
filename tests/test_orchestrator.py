@@ -107,7 +107,7 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
@@ -118,7 +118,7 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
             "current_vs_52w_high_pct": -10.0,
         }
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
 
@@ -216,13 +216,13 @@ async def test_run_full_analysis_reuses_fresh_company_cache(tmp_path: Path, monk
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
         return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
 
@@ -283,7 +283,7 @@ async def test_run_full_analysis_respects_configured_analyst_parallelism(tmp_pat
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
@@ -322,7 +322,7 @@ async def test_run_full_analysis_respects_configured_analyst_parallelism(tmp_pat
             False,
         )
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
     monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
@@ -352,7 +352,7 @@ async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatc
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
@@ -388,7 +388,7 @@ async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatc
             False,
         )
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
     monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
@@ -398,6 +398,72 @@ async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatc
     assert len(start_times) == 3
     assert start_times[1] - start_times[0] >= 0.045
     assert start_times[2] - start_times[1] >= 0.045
+
+
+async def test_run_full_analysis_continues_when_price_history_is_missing(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("TIPSMUSIC", 4.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
+        return sync_result
+
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        from tools import ToolExecutionError
+
+        raise ToolExecutionError("No historical data available for TIPSMUSIC")
+
+    captured_price_contexts = []
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        captured_price_contexts.append(kwargs["price_context"])
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="TIPSMUSIC",
+                company_name="Tips Music",
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Catalog optionality.",
+                bear_case="Execution risk.",
+                what_to_watch="Royalty growth",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    report = await orchestrator.run_full_analysis(settings)
+
+    assert report.verdicts[0].tradingsymbol == "TIPSMUSIC"
+    assert captured_price_contexts[0]["52w_high"] == 0.0
+    assert captured_price_contexts[0]["price_change_1y_pct"] == 0.0
 
 
 async def test_run_full_analysis_fails_fast_and_logs_error(tmp_path: Path, monkeypatch) -> None:
@@ -417,7 +483,7 @@ async def test_run_full_analysis_fails_fast_and_logs_error(tmp_path: Path, monke
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
@@ -426,7 +492,7 @@ async def test_run_full_analysis_fails_fast_and_logs_error(tmp_path: Path, monke
     async def failing_get_company_artifact_and_verdict(**kwargs):
         raise TimeoutError("anthropic timeout")
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
     monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", failing_get_company_artifact_and_verdict)
@@ -480,7 +546,7 @@ async def test_run_full_analysis_fails_fast_on_price_history_retry_failure(tmp_p
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def failing_price_contexts(**kwargs):
@@ -491,7 +557,7 @@ async def test_run_full_analysis_fails_fast_on_price_history_retry_failure(tmp_p
             ticker="KPITTECH",
         )
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "_price_contexts", failing_price_contexts)
     monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
 
@@ -518,7 +584,7 @@ async def test_run_full_analysis_fails_on_verdict_error_payload(tmp_path: Path, 
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
@@ -550,7 +616,7 @@ async def test_run_full_analysis_fails_on_verdict_error_payload(tmp_path: Path, 
             False,
         )
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
     monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
@@ -579,7 +645,7 @@ async def test_run_full_analysis_fails_fast_on_summary_retry_failure(tmp_path: P
         mf_artifact=tmp_path / "mf.json",
     )
 
-    async def fake_sync_kite_data(settings):
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
         return sync_result
 
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
@@ -620,7 +686,7 @@ async def test_run_full_analysis_fails_fast_on_summary_retry_failure(tmp_path: P
             )
         return await func()
 
-    monkeypatch.setattr(orchestrator, "sync_kite_data", fake_sync_kite_data)
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
     monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)

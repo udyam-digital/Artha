@@ -11,7 +11,7 @@ from pathlib import Path
 from anthropic import AsyncAnthropic
 
 from config import configure_logging, get_settings
-from kite_runtime import KiteSyncResult, sync_kite_data
+from kite_runtime import KiteSyncResult, load_same_day_kite_sync_result, sync_kite_data
 from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
 from orchestrator import run_full_analysis, run_single_company_analysis
 from reliability import FullRunFailed
@@ -300,7 +300,14 @@ async def handle_run(args: argparse.Namespace) -> int:
 
     with usage_run(settings=settings, command="run") as usage_summary:
         try:
-            report = await run_full_analysis(settings, progress_callback=progress_callback)
+            cached_sync_result = load_same_day_kite_sync_result(settings)
+            if cached_sync_result is not None:
+                print("Using today's saved Kite snapshots. Skipping fresh Kite login and sync.")
+            report = await run_full_analysis(
+                settings,
+                progress_callback=progress_callback,
+                sync_result=cached_sync_result,
+            )
         except FullRunFailed as exc:
             print()
             print_run_failure(exc, usage_summary)

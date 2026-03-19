@@ -26,7 +26,7 @@ async def test_handle_run_prints_failure_and_returns_nonzero(tmp_path: Path, mon
     settings = make_settings(tmp_path)
     monkeypatch.setattr(main, "get_settings", lambda: settings)
 
-    async def failing_run_full_analysis(settings, progress_callback=None):
+    async def failing_run_full_analysis(settings, progress_callback=None, sync_result=None):
         raise FullRunFailed(
             phase="analyst",
             message="anthropic timeout",
@@ -44,3 +44,26 @@ async def test_handle_run_prints_failure_and_returns_nonzero(tmp_path: Path, mon
     assert "ARTHA RUN FAILED" in captured.out
     assert "Phase:                 analyst" in captured.out
     assert "Holding:               KPITTECH" in captured.out
+
+
+async def test_handle_run_reuses_same_day_snapshots(tmp_path: Path, monkeypatch, capsys) -> None:
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    marker = object()
+    monkeypatch.setattr(main, "load_same_day_kite_sync_result", lambda settings: marker)
+
+    async def fake_run_full_analysis(settings, progress_callback=None, sync_result=None):
+        assert sync_result is marker
+        raise FullRunFailed(
+            phase="analyst",
+            message="expected test stop",
+            retries_used=0,
+        )
+
+    monkeypatch.setattr(main, "run_full_analysis", fake_run_full_analysis)
+    args = argparse.Namespace(rebalance_only=False, ticker=None, exchange="NSE")
+    rc = await main.handle_run(args)
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "Using today's saved Kite snapshots." in captured.out
