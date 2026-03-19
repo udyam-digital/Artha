@@ -92,11 +92,7 @@ def initialize_telemetry(settings: Settings) -> bool:
     _TRACER = provider.get_tracer(settings.telemetry_service_name)
     _TELEMETRY_INITIALIZED = True
     _TELEMETRY_ENABLED = True
-    logger.info(
-        "Telemetry initialized via %s exporter to %s",
-        backend,
-        _redact_endpoint_for_logs(endpoint),
-    )
+    logger.info("Telemetry initialized successfully.")
     return True
 
 
