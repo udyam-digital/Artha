@@ -17,8 +17,9 @@ from orchestrator import run_full_analysis, run_single_company_analysis
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from research import DeepResearchOrchestrator
 from snapshot_store import load_latest_portfolio_snapshot
+from telemetry import initialize_telemetry, shutdown_telemetry
 from tools import ToolExecutionError
-from usage_tracking import format_usage_summary, usage_run
+from usage_tracking import format_run_summary, format_usage_summary, load_recent_run_summaries, usage_run
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +344,23 @@ async def handle_research() -> int:
     return 0
 
 
+async def handle_usage_report(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    summaries = load_recent_run_summaries(settings, limit=args.last)
+    if not summaries:
+        print("No historical run summaries found.")
+        print(f"Expected summary log path: {settings.llm_usage_dir / 'run_summaries.jsonl'}")
+        return 0
+
+    print(f"Showing {len(summaries)} most recent run(s):")
+    print()
+    for summary in summaries:
+        print(format_run_summary(summary))
+    print()
+    print(f"Run summary log: {settings.llm_usage_dir / 'run_summaries.jsonl'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Artha portfolio research and rebalancing agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -361,6 +379,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
     subparsers.add_parser("rebalance", help="Generate a rebalancing report from the latest saved local equity snapshot")
     subparsers.add_parser("research", help="Run deep web research on the latest saved equity and MF snapshots")
+    usage_parser = subparsers.add_parser("usage-report", help="Print recent historical LLM usage summaries")
+    usage_parser.add_argument("--last", type=int, default=10, help="Number of recent runs to show")
     return parser
 
 
@@ -369,6 +389,7 @@ async def async_main() -> int:
     args = parser.parse_args()
     settings = get_settings()
     configure_logging(settings.log_level)
+    initialize_telemetry(settings)
 
     try:
         if args.command == "run":
@@ -383,6 +404,8 @@ async def async_main() -> int:
             return await handle_rebalance()
         if args.command == "research":
             return await handle_research()
+        if args.command == "usage-report":
+            return await handle_usage_report(args)
         parser.error("Unknown command")
         return 2
     except ToolExecutionError as exc:
@@ -391,6 +414,8 @@ async def async_main() -> int:
     except Exception:
         logger.exception("Artha failed")
         return 1
+    finally:
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":

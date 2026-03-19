@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from config import Settings
+from telemetry import emit_span, start_span
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class UsageRunSummary:
     run_id: str
     command: str
     usage_path: Path
+    summary_path: Path
     started_at: datetime
     total_estimated_cost_usd: Decimal = _ZERO
     total_input_tokens: int = 0
@@ -44,15 +47,29 @@ class UsageRunSummary:
     total_cache_creation_input_tokens: int = 0
     total_web_search_requests: int = 0
     total_entries: int = 0
+    calls_by_model: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    calls_by_phase: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    cost_by_model_usd: dict[str, Decimal] = field(default_factory=lambda: defaultdict(lambda: _ZERO))
+    cost_by_phase_usd: dict[str, Decimal] = field(default_factory=lambda: defaultdict(lambda: _ZERO))
+    _span_cm: Any | None = None
+    _span: Any | None = None
 
     def add_entry(self, entry: dict[str, Any]) -> None:
-        self.total_estimated_cost_usd += Decimal(str(entry["estimated_cost_usd"]))
+        cost = Decimal(str(entry["estimated_cost_usd"]))
+        self.total_estimated_cost_usd += cost
         self.total_input_tokens += int(entry["input_tokens"])
         self.total_output_tokens += int(entry["output_tokens"])
         self.total_cache_read_input_tokens += int(entry["cache_read_input_tokens"])
         self.total_cache_creation_input_tokens += int(entry["cache_creation_input_tokens"])
         self.total_web_search_requests += int(entry["web_search_requests"])
         self.total_entries += 1
+
+        model = str(entry["model"])
+        phase = str(entry.get("metadata", {}).get("phase", "unknown"))
+        self.calls_by_model[model] += 1
+        self.calls_by_phase[phase] += 1
+        self.cost_by_model_usd[model] += cost
+        self.cost_by_phase_usd[phase] += cost
 
 
 _CURRENT_RUN: ContextVar[UsageRunSummary | None] = ContextVar("artha_usage_run", default=None)
@@ -106,24 +123,76 @@ def _usage_path_for_today(settings: Settings) -> Path:
     return settings.llm_usage_dir / f"llm_usage_{stamp}.jsonl"
 
 
+def _summary_path(settings: Settings) -> Path:
+    return settings.llm_usage_dir / "run_summaries.jsonl"
+
+
 def _decimal_to_str(value: Decimal) -> str:
     return format(value.quantize(_USD), "f")
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _WRITE_LOCK:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+
+def _summary_record(summary: UsageRunSummary, *, completed_at: datetime) -> dict[str, Any]:
+    duration_seconds = (completed_at - summary.started_at).total_seconds()
+    return {
+        "run_id": summary.run_id,
+        "command": summary.command,
+        "started_at": summary.started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "duration_seconds": round(duration_seconds, 3),
+        "usage_path": str(summary.usage_path),
+        "total_estimated_cost_usd": _decimal_to_str(summary.total_estimated_cost_usd),
+        "total_input_tokens": summary.total_input_tokens,
+        "total_output_tokens": summary.total_output_tokens,
+        "total_cache_read_input_tokens": summary.total_cache_read_input_tokens,
+        "total_cache_creation_input_tokens": summary.total_cache_creation_input_tokens,
+        "total_web_search_requests": summary.total_web_search_requests,
+        "total_entries": summary.total_entries,
+        "calls_by_model": dict(summary.calls_by_model),
+        "calls_by_phase": dict(summary.calls_by_phase),
+        "cost_by_model_usd": {key: _decimal_to_str(value) for key, value in summary.cost_by_model_usd.items()},
+        "cost_by_phase_usd": {key: _decimal_to_str(value) for key, value in summary.cost_by_phase_usd.items()},
+    }
 
 
 @contextmanager
 def usage_run(*, settings: Settings, command: str):
     usage_path = _usage_path_for_today(settings)
-    usage_path.parent.mkdir(parents=True, exist_ok=True)
     summary = UsageRunSummary(
         run_id=uuid4().hex,
         command=command,
         usage_path=usage_path,
+        summary_path=_summary_path(settings),
         started_at=_utc_now(),
     )
+    span_cm = start_span(
+        "artha.run",
+        {
+            "artha.run_id": summary.run_id,
+            "artha.command": command,
+        },
+    )
+    summary._span_cm = span_cm
+    summary._span = span_cm.__enter__()
     token: Token[UsageRunSummary | None] = _CURRENT_RUN.set(summary)
     try:
         yield summary
     finally:
+        completed_at = _utc_now()
+        summary_record = _summary_record(summary, completed_at=completed_at)
+        _append_jsonl(summary.summary_path, summary_record)
+        if summary._span is not None:
+            summary._span.set_attribute("artha.total_estimated_cost_usd", summary_record["total_estimated_cost_usd"])
+            summary._span.set_attribute("artha.total_entries", summary.total_entries)
+            summary._span.set_attribute("artha.total_web_search_requests", summary.total_web_search_requests)
+        if summary._span_cm is not None:
+            summary._span_cm.__exit__(None, None, None)
         _CURRENT_RUN.reset(token)
 
 
@@ -181,13 +250,27 @@ def record_anthropic_usage(
     }
 
     usage_path = run.usage_path if run else _usage_path_for_today(settings)
-    usage_path.parent.mkdir(parents=True, exist_ok=True)
-    with _WRITE_LOCK:
-        with usage_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+    _append_jsonl(usage_path, entry)
 
     if run is not None:
         run.add_entry(entry)
+
+    emit_span(
+        "artha.llm_call",
+        {
+            "artha.run_id": entry["run_id"],
+            "artha.command": entry["command"],
+            "artha.label": label,
+            "artha.phase": entry["metadata"].get("phase"),
+            "gen_ai.request.model": model,
+            "gen_ai.usage.input_tokens": input_tokens,
+            "gen_ai.usage.output_tokens": output_tokens,
+            "artha.usage.cache_read_input_tokens": cache_read_input_tokens,
+            "artha.usage.cache_creation_input_tokens": cache_creation_input_tokens,
+            "artha.usage.web_search_requests": web_search_requests,
+            "artha.usage.estimated_cost_usd": entry["estimated_cost_usd"],
+        },
+    )
 
     logger.info(
         "%s usage model=%s input=%s output=%s web_searches=%s est_cost_usd=%s",
@@ -210,3 +293,22 @@ def format_usage_summary(summary: UsageRunSummary) -> str:
         f"{summary.total_output_tokens} output token(s), "
         f"{summary.total_web_search_requests} web search(es)"
     )
+
+
+def format_run_summary(summary_record: dict[str, Any]) -> str:
+    return (
+        f"{summary_record['started_at']} | {summary_record['command']} | "
+        f"${summary_record['total_estimated_cost_usd']} | "
+        f"{summary_record['total_entries']} call(s) | "
+        f"{summary_record['total_web_search_requests']} web search(es)"
+    )
+
+
+def load_recent_run_summaries(settings: Settings, *, limit: int = 10) -> list[dict[str, Any]]:
+    path = _summary_path(settings)
+    if not path.exists():
+        return []
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [json.loads(line) for line in lines[-limit:]]
+    records.reverse()
+    return records

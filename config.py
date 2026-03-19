@@ -4,6 +4,7 @@ import logging
 from json import JSONDecodeError, loads
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -32,6 +33,14 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=10, alias="MAX_ITERATIONS")
     reports_dir: Path = Field(default=ROOT_DIR / "reports", alias="REPORTS_DIR")
     llm_usage_dir: Path = Field(default=ROOT_DIR / "reports" / "usage", alias="LLM_USAGE_DIR")
+    telemetry_service_name: str = Field(default="artha", alias="TELEMETRY_SERVICE_NAME")
+    telemetry_environment: str = Field(default="development", alias="TELEMETRY_ENVIRONMENT")
+    telemetry_enabled: bool = Field(default=True, alias="TELEMETRY_ENABLED")
+    otel_exporter_otlp_endpoint: str = Field(default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
+    otel_exporter_otlp_headers: dict[str, str] = Field(default_factory=dict, alias="OTEL_EXPORTER_OTLP_HEADERS")
+    langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
+    langfuse_base_url: str = Field(default="https://cloud.langfuse.com", alias="LANGFUSE_BASE_URL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     kite_mcp_url: str = Field(default=DEFAULT_KITE_MCP_URL, alias="KITE_MCP_URL")
     kite_mcp_command: str = Field(default="", alias="KITE_MCP_COMMAND")
@@ -49,6 +58,13 @@ class Settings(BaseSettings):
             return DEFAULT_KITE_MCP_URL
         url = str(value).strip()
         return url or DEFAULT_KITE_MCP_URL
+
+    @field_validator("otel_exporter_otlp_endpoint", "langfuse_public_key", "langfuse_secret_key", "langfuse_base_url", mode="before")
+    @classmethod
+    def parse_stripped_strings(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
 
     @field_validator("kite_mcp_command", mode="before")
     @classmethod
@@ -90,6 +106,23 @@ class Settings(BaseSettings):
                 raise ValueError("KITE_MCP_ENV_JSON must decode to an object.")
             return {str(key): str(val) for key, val in parsed.items()}
         raise ValueError("KITE_MCP_ENV_JSON must be a dict or JSON object string.")
+
+    @field_validator("otel_exporter_otlp_headers", mode="before")
+    @classmethod
+    def parse_otel_exporter_otlp_headers(cls, value: object) -> dict[str, str]:
+        if value in (None, "", {}):
+            return {}
+        if isinstance(value, dict):
+            return {str(key): str(val) for key, val in value.items()}
+        if isinstance(value, str):
+            try:
+                parsed: Any = loads(value)
+            except JSONDecodeError as exc:
+                raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must be a JSON object string.") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must decode to an object.")
+            return {str(key): str(val) for key, val in parsed.items()}
+        raise ValueError("OTEL_EXPORTER_OTLP_HEADERS must be a dict or JSON object string.")
 
 
 @lru_cache(maxsize=1)

@@ -1,0 +1,127 @@
+{
+  "generated_at": "2026-03-19T09:35:27.565458Z",
+  "source_model": "claude-haiku-4-5",
+  "exchange": "BSE",
+  "ticker": "CUMMINSIND",
+  "report_card": {
+    "stock_snapshot": {
+      "name": "Cummins India Limited",
+      "ticker": "CUMMINSIND",
+      "sector": "Capital Goods - Non Electrical Equipment",
+      "market_cap_category": "Large",
+      "current_price": 4722.7,
+      "high_52w": 4987.0,
+      "low_52w": 2580.0,
+      "time_horizon": "Compounder"
+    },
+    "thesis": {
+      "core_idea": "Leading manufacturer of diesel/gas engines benefiting from India's infrastructure push, rail capex, and emerging data center opportunities with exceptional capital efficiency and high ROE.",
+      "growth_driver": "Double-digit domestic revenue growth (16% TTM), margin expansion to 20-quarter highs (38% gross margins), data center sector tailwinds (25% of power gen revenue), and infrastructure/rail capex support.",
+      "edge": "Strong parent backing (51% Cummins Inc. stake), debt-free balance sheet, 29.6% ROE, 22.4% 5-year profit CAGR, best-in-class cost management, and diversified three-segment model (Engine, Power Systems, Distribution).",
+      "trigger": "Analyst upgrade (Jefferies Buy at ₹4,975), infrastructure capex momentum, data center tax holiday extended to 2047, and Q3 cost controls driving operating leverage."
+    },
+    "growth_engine": {
+      "revenue_cagr": "16%",
+      "eps_cagr": "22.4%",
+      "sector_tailwind": "High",
+      "growth_score": 8
+    },
+    "quality": {
+      "roce": "29.6%",
+      "roe": "29.6%",
+      "debt_to_equity": "0.0",
+      "fcf_status": "Positive",
+      "governance_flags": "No material issues; 51% promoter backing by Cummins Inc; strong board composition",
+      "quality_score": 9
+    },
+    "valuation": {
+      "pe": "57.9",
+      "sector_pe": "35.56",
+      "peg": "2.58",
+      "fcf_yield": "2.1%",
+      "fair_value_range": [
+        4200.0,
+        4975.0
+      ],
+      "margin_of_safety": "-4.5%",
+      "rvs_score": 4
+    },
+    "timing": {
+      "price_vs_200dma": "+15%",
+      "momentum": "Bullish",
+      "fii_trend": "Positive (analyst upgrades and institutional demand)",
+      "timing_signal": "Favorable"
+    },
+    "capital_efficiency": {
+      "roic_trend": "Expanding - Q3 margins at 20-quarter highs; PBT up 7% YoY",
+      "reinvestment_quality": "Excellent - capex driving capacity expansion and cost optimization with strong returns on incremental capital",
+      "capital_efficiency_score": 9
+    },
+    "risk_matrix": {
+      "structural_risks": [
+        "Export uncertainty due to geopolitical volatility and tariff pressures",
+        "Competitive intensity in domestic markets limiting pricing power",
+        "Regulatory changes in emission norms requiring continuous R&D investment"
+      ],
+      "cyclical_risks": [
+        "Domestic economic slowdown could impact commercial vehicle and power gen segments",
+        "Commodity price volatility affecting material costs",
+        "Working capital pressure from higher receivables"
+      ],
+      "company_risks": [
+        "Data center pipeline is lumpy; 25% revenue concentration in this sector",
+        "Q3 profit declined 12.96% YoY despite revenue growth (cost pressures)",
+        "Market share decline from 8.82% to 7.96% over 5 years indicates competitive pressure"
+      ],
+      "risk_level": "Medium"
+    },
+    "action_plan": {
+      "buy_zone": [
+        4200.0,
+        4400.0
+      ],
+      "add_zone": 4500.0,
+      "hold_zone": "4400-4800",
+      "trim_zone": 4900.0,
+      "stop_loss": 4000.0
+    },
+    "position_sizing": {
+      "suggested_allocation": "Given current portfolio weight of 7.1% vs target 9.1%, ADD 2% to close drift. Add incrementally on dips to ₹4400.",
+      "max_allocation": "10% (maximum position concentration given valuation premium and cyclical risks)"
+    },
+    "final_verdict": {
+      "verdict": "ADD",
+      "confidence": "High"
+    },
+    "monitoring": {
+      "next_triggers": [
+        "Q4 FY26 earnings (May 27, 2026) - track domestic growth trajectory and export recovery",
+        "FY27 guidance for double-digit growth confirmation",
+        "Data center revenue contribution and pipeline updates",
+        "Margin sustainability amid commodity cost pressures",
+        "Capital expenditure execution and ROI on new capacity"
+      ],
+      "key_metrics": [
+        "Revenue growth rate (target: 12-14% for FY27)",
+        "Gross margin (monitor 38% levels)",
+        "ROE sustainability (target: >28%)",
+        "Free cash flow generation (₹1000+ Cr annually)",
+        "Domestic vs export mix (geopolitical impact)"
+      ],
+      "red_flags": [
+        "Revenue growth falling below 10% YoY",
+        "Gross margins compressing below 35%",
+        "Debt-to-equity rising above 0.2",
+        "Export revenue declining >20% YoY",
+        "ROE dropping below 25%"
+      ]
+    },
+    "data_sources": [
+      "Cummins India BSE/NSE official disclosures (Q3 FY26)",
+      "Jefferies analyst report (Feb 2026, target ₹4,975)",
+      "TickerTape, Screener.in, 5Paisa (financial data as of Mar 13-19, 2026)",
+      "Company earnings call transcripts (Feb 2026)",
+      "Industry data from Bajaj Finserv, Kotak Neo, HDFC Securities"
+    ]
+  }
+}

@@ -36,6 +36,14 @@ ANALYST_MAX_TOKENS=2500
 SUMMARY_MAX_TOKENS=700
 COMPANY_ANALYSIS_MAX_AGE_DAYS=7
 LLM_USAGE_DIR=./reports/usage
+TELEMETRY_SERVICE_NAME=artha
+TELEMETRY_ENVIRONMENT=development
+TELEMETRY_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=
+OTEL_EXPORTER_OTLP_HEADERS={}
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
 Authenticate and sync fresh snapshots:
@@ -58,6 +66,7 @@ Authenticate and sync fresh snapshots:
 .venv/bin/python main.py run --rebalance-only
 .venv/bin/python main.py research
 .venv/bin/python main.py holdings
+.venv/bin/python main.py usage-report --last 10
 ```
 
 Supported flows:
@@ -70,12 +79,20 @@ Supported flows:
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
+- `usage-report --last 10`: prints recent historical run summaries from the persistent run ledger
 
 LLM cost logging:
 
 - `run`, `run --ticker`, and `research` now append one JSON object per Anthropic call under `reports/usage/llm_usage_YYYYMMDD.jsonl`
 - each entry records run id, command, label, model, input/output tokens, cache tokens, web-search count, and estimated USD cost
+- every run also appends one summary row to `reports/usage/run_summaries.jsonl` with total cost, total calls, phase/model breakdowns, and the daily usage log path
 - the CLI prints a per-run estimated LLM cost summary and the JSONL path after completion
+
+Observability and tracing:
+
+- set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and optionally `LANGFUSE_BASE_URL` to export OpenTelemetry traces directly to Langfuse
+- or set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` to ship traces to any OTLP-compatible backend
+- Artha emits one root span per run and one child span per Anthropic call, including model, tokens, web-search count, and estimated cost attributes
 
 ## Architecture
 
@@ -126,6 +143,7 @@ Company artifact cache:
 - artifacts are reused for up to `COMPANY_ANALYSIS_MAX_AGE_DAYS` days
 - old Python-code-style analyst payloads are not reused; they are treated as invalid cache and refreshed
 - `reports/usage/llm_usage_YYYYMMDD.jsonl` stores the per-call Anthropic usage ledger used for cost analysis
+- `reports/usage/run_summaries.jsonl` stores one persistent cross-run summary row per portfolio, research, or ticker run
 
 Data layout:
 
