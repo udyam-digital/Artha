@@ -127,20 +127,40 @@ Notes:
   - use `.github/skills/gh-cli/` when repo automation depends on GitHub CLI workflows
   - use `.github/skills/python-mcp-server-generator/` when adding or restructuring Python MCP server behavior
   - use `.github/skills/sql-optimization/` when query design or SQL performance becomes relevant
+  - use `.github/skills/agentic-eval/` when evaluating AI agent outputs
+  - use `.github/skills/autoresearch/` for autonomous experimentation and optimization
+  - use `.github/skills/codeql/` for security scanning and CodeQL configuration
+  - use `.github/skills/github-issues/` for GitHub issue management and tracking
+  - use `.github/skills/polyglot-test-agent/` for generating comprehensive unit tests
+  - use `.github/skills/prd/` for creating product requirements documents
+  - use `.github/skills/prompt-builder/` for building and refining prompts
+  - use `.github/skills/refactor/` for code refactoring and maintainability improvements
+  - use `.github/skills/secret-scanning/` for configuring secret scanning and remediation
+  - use `.github/skills/sql-code-review/` for SQL code review and security analysis
 - Treat repo-local skills as execution guidance for this codebase, not just reference material.
 
 ### Current Repo-Local Skill Registry
 
 Current skills available under `.github/skills/`:
 
+- `agentic-eval`
+- `autoresearch`
+- `codeql`
 - `conventional-commit`
 - `create-readme`
 - `dependabot`
 - `doublecheck`
 - `eval-driven-dev`
 - `gh-cli`
+- `github-issues`
+- `polyglot-test-agent`
+- `prd`
+- `prompt-builder`
 - `pytest-coverage`
 - `python-mcp-server-generator`
+- `refactor`
+- `secret-scanning`
+- `sql-code-review`
 - `sql-optimization`
 - `suggest-awesome-github-copilot-agents`
 - `suggest-awesome-github-copilot-instructions`

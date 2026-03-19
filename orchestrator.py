@@ -48,19 +48,27 @@ def _merge_action_into_verdict(verdict: StockVerdict, action: RebalancingAction 
     if action.action == "HOLD" or _should_gate_to_hold(verdict.verdict, verdict.thesis_intact):
         verdict.rebalance_action = "HOLD"
         verdict.rebalance_rupees = 0.0
-        verdict.rebalance_reasoning = (
-            f"Drift math suggested {action.action}, but the final action is HOLD because the verdict is "
-            f"{verdict.verdict} with thesis_intact={verdict.thesis_intact}."
-        )
+        verdict.rebalance_reasoning = _hold_reasoning(verdict)
         return verdict
 
     verdict.rebalance_action = action.action
     verdict.rebalance_rupees = round(action.rupee_amount, 2)
-    verdict.rebalance_reasoning = (
-        f"Verdict {verdict.verdict} supports a {action.action} and drift is {action.drift_pct:+.1f}% "
-        f"versus target, so the deterministic sizing is used."
-    )
+    verdict.rebalance_reasoning = _action_reasoning(action.action)
     return verdict
+
+
+def _hold_reasoning(verdict: StockVerdict) -> str:
+    if verdict.verdict == Verdict.HOLD and verdict.thesis_intact:
+        return "Current conviction is unchanged. No rebalance action now; monitor drift versus target."
+    return "Current conviction does not support rebalancing this position now; monitor drift versus target."
+
+
+def _action_reasoning(action: str) -> str:
+    if action == "BUY":
+        return "Underweight versus target. Current conviction supports adding more."
+    if action == "SELL":
+        return "Overweight versus target. Current conviction supports trimming."
+    return "Current conviction is unchanged. No rebalance action now; monitor drift versus target."
 
 
 def _verdict_to_action(verdict: StockVerdict, holding: Holding) -> RebalancingAction:

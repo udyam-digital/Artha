@@ -11,7 +11,7 @@ import orchestrator
 from reliability import FullRunFailed, RetryFailure
 from config import Settings
 from kite_runtime import KiteSyncResult
-from models import Holding, MFSnapshot, MFHolding, PortfolioSnapshot, StockVerdict
+from models import Holding, MFSnapshot, MFHolding, PortfolioSnapshot, RebalancingAction, StockVerdict
 
 
 pytestmark = pytest.mark.anyio
@@ -191,7 +191,13 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     assert [verdict.tradingsymbol for verdict in report.verdicts] == ["BSE", "KPITTECH"]
     assert report.verdicts[0].rebalance_action == "HOLD"
     assert report.verdicts[0].rebalance_rupees == 0.0
+    assert report.verdicts[0].rebalance_reasoning == (
+        "Current conviction is unchanged. No rebalance action now; monitor drift versus target."
+    )
     assert report.verdicts[1].rebalance_action == "BUY"
+    assert report.verdicts[1].rebalance_reasoning == (
+        "Underweight versus target. Current conviction supports adding more."
+    )
     assert report.total_buy_required > 0
     assert report.total_sell_required == 0.0
     assert progress[-1][0] == 2
@@ -822,6 +828,52 @@ def test_gate_helpers_cover_sell_and_missing_action() -> None:
     )
     merged = orchestrator._merge_action_into_verdict(verdict, None)
     assert merged.rebalance_action == "HOLD"
+    assert merged.rebalance_reasoning == "No deterministic rebalance action was generated for this holding."
     assert orchestrator._should_gate_to_hold("SELL", True) is True
     assert orchestrator._should_gate_to_hold("STRONG_SELL", False) is False
     assert orchestrator._should_gate_to_hold("UNKNOWN", True) is True
+
+
+def test_merge_action_into_verdict_rewrites_internal_hold_reasoning() -> None:
+    verdict = StockVerdict(
+        tradingsymbol="BSE",
+        company_name="BSE Ltd",
+        verdict="HOLD",
+        confidence="HIGH",
+        current_price=100.0,
+        buy_price=90.0,
+        pnl_pct=10.0,
+        thesis_intact=True,
+        bull_case="Good franchise.",
+        bear_case="Valuation is rich.",
+        what_to_watch="Volumes",
+        red_flags=[],
+        rebalance_action="HOLD",
+        rebalance_rupees=0.0,
+        rebalance_reasoning="Placeholder.",
+        data_sources=["https://example.com"],
+        analysis_duration_seconds=1.0,
+        error=None,
+    )
+    action = RebalancingAction(
+        tradingsymbol="BSE",
+        action="SELL",
+        current_weight_pct=14.7,
+        target_weight_pct=10.0,
+        drift_pct=4.7,
+        rupee_amount=4700.0,
+        quantity_approx=10,
+        reasoning="Internal math",
+        urgency="MEDIUM",
+    )
+
+    merged = orchestrator._merge_action_into_verdict(verdict, action)
+
+    assert merged.rebalance_action == "HOLD"
+    assert merged.rebalance_rupees == 0.0
+    assert merged.rebalance_reasoning == (
+        "Current conviction is unchanged. No rebalance action now; monitor drift versus target."
+    )
+    assert "Drift math suggested" not in merged.rebalance_reasoning
+    assert "thesis_intact=" not in merged.rebalance_reasoning
+    assert "deterministic sizing" not in merged.rebalance_reasoning

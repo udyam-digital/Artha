@@ -105,7 +105,7 @@ Supported flows:
 Dashboard API endpoints:
 
 - `GET /api/health`: health check
-- `GET /api/holdings`: live equity holdings plus latest saved MF snapshot, with 401 + Kite login URL when the session is expired
+- `GET /api/holdings`: live equity holdings plus latest saved MF snapshot; if live Kite access fails but a saved portfolio snapshot exists, the API returns the cached holdings with `live_status="fallback"` and an optional reconnect URL
 - `GET /api/reports`: report index with verdict counts and error counts
 - `GET /api/reports/latest`: latest full `PortfolioReport`
 - `GET /api/reports/{report_id}`: full saved report by filename stem

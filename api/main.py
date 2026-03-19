@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from config import Settings, get_settings
 from kite_runtime import build_kite_client
 from models import Holding, MFSnapshot, PortfolioReport, PortfolioSnapshot, Verdict
-from snapshot_store import load_latest_mf_snapshot
+from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot
 from tools import kite_get_portfolio, kite_get_profile, kite_login, profile_requires_login
 
 
@@ -32,6 +32,8 @@ class HealthResponse(BaseModel):
 
 class HoldingsResponse(PortfolioSnapshot):
     mf_snapshot: MFSnapshot | None = None
+    live_status: str = "live"
+    live_error: dict[str, str | None] | None = None
 
 
 class ReportListItem(BaseModel):
@@ -75,11 +77,32 @@ def create_app() -> FastAPI:
     @app.get("/api/holdings", response_model=HoldingsResponse)
     async def holdings() -> HoldingsResponse:
         settings = get_settings()
-        async with build_kite_client(settings) as kite_client:
-            await _ensure_authenticated(kite_client, settings)
-            snapshot = await kite_get_portfolio(kite_client, settings=settings)
         mf_snapshot = _load_latest_mf_snapshot_or_none(settings)
-        return HoldingsResponse(**snapshot.model_dump(), mf_snapshot=mf_snapshot)
+        try:
+            async with build_kite_client(settings) as kite_client:
+                await _ensure_authenticated(kite_client, settings)
+                snapshot = await kite_get_portfolio(kite_client, settings=settings)
+        except HTTPException as exc:
+            snapshot = _load_latest_portfolio_snapshot_or_none(settings)
+            if snapshot is None:
+                raise
+            return HoldingsResponse(
+                **snapshot.model_dump(),
+                mf_snapshot=mf_snapshot,
+                live_status="fallback",
+                live_error=_http_exception_to_live_error(exc),
+            )
+        except Exception:
+            snapshot = _load_latest_portfolio_snapshot_or_none(settings)
+            if snapshot is None:
+                raise HTTPException(status_code=503, detail="Failed to reach Kite MCP.")
+            return HoldingsResponse(
+                **snapshot.model_dump(),
+                mf_snapshot=mf_snapshot,
+                live_status="fallback",
+                live_error={"message": "Live Kite holdings unavailable. Showing the latest saved snapshot.", "login_url": None},
+            )
+        return HoldingsResponse(**snapshot.model_dump(), mf_snapshot=mf_snapshot, live_status="live", live_error=None)
 
     @app.get("/api/reports", response_model=list[ReportListItem])
     async def reports() -> list[ReportListItem]:
@@ -167,6 +190,25 @@ def _load_latest_mf_snapshot_or_none(settings: Settings) -> MFSnapshot | None:
         return load_latest_mf_snapshot(settings)
     except FileNotFoundError:
         return None
+
+
+def _load_latest_portfolio_snapshot_or_none(settings: Settings) -> PortfolioSnapshot | None:
+    try:
+        return load_latest_portfolio_snapshot(settings)
+    except FileNotFoundError:
+        return None
+
+
+def _http_exception_to_live_error(exc: HTTPException) -> dict[str, str | None]:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return {
+            "message": str(detail.get("message") or "Live Kite holdings unavailable. Showing the latest saved snapshot."),
+            "login_url": str(detail.get("login_url")) if detail.get("login_url") else None,
+        }
+    if isinstance(detail, str):
+        return {"message": detail, "login_url": None}
+    return {"message": "Live Kite holdings unavailable. Showing the latest saved snapshot.", "login_url": None}
 
 
 def _report_to_list_item(report_path: Path) -> ReportListItem | None:

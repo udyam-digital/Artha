@@ -151,6 +151,26 @@ def test_price_history_uses_latest_report_holding(monkeypatch, tmp_path: Path) -
 
 def test_holdings_returns_401_with_login_url(monkeypatch, tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at=datetime(2026, 3, 19, tzinfo=timezone.utc),
+        total_value=125000.0,
+        available_cash=5000.0,
+        holdings=[
+            Holding(
+                tradingsymbol="KPITTECH",
+                exchange="NSE",
+                quantity=10,
+                average_price=1000.0,
+                last_price=1100.0,
+                current_value=11000.0,
+                current_weight_pct=8.8,
+                target_weight_pct=10.0,
+                pnl=1000.0,
+                pnl_pct=10.0,
+                instrument_token=12345,
+            )
+        ],
+    )
     mf_snapshot = MFSnapshot(
         fetched_at=datetime(2026, 3, 19, tzinfo=timezone.utc),
         total_value=1000.0,
@@ -170,9 +190,43 @@ def test_holdings_returns_401_with_login_url(monkeypatch, tmp_path: Path) -> Non
             )
         ],
     )
+    portfolio_path = settings.kite_data_dir / "portfolio" / "latest_snapshot.json"
+    portfolio_path.parent.mkdir(parents=True, exist_ok=True)
+    portfolio_path.write_text(snapshot.model_dump_json(), encoding="utf-8")
     mf_path = settings.kite_data_dir / "mf" / "latest_snapshot.json"
     mf_path.parent.mkdir(parents=True, exist_ok=True)
     mf_path.write_text(mf_snapshot.model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_profile(_kite_client):
+        return {}
+
+    async def fake_login(_kite_client, settings):
+        return ({}, "https://kite.example/login", settings.kite_data_dir / "auth.json")
+
+    monkeypatch.setattr(api_main, "build_kite_client", lambda settings: FakeClient())
+    monkeypatch.setattr(api_main, "kite_get_profile", fake_profile)
+    monkeypatch.setattr(api_main, "kite_login", fake_login)
+    client = TestClient(api_main.create_app())
+
+    response = client.get("/api/holdings")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["live_status"] == "fallback"
+    assert payload["live_error"]["login_url"] == "https://kite.example/login"
+    assert payload["holdings"][0]["tradingsymbol"] == "KPITTECH"
+
+
+def test_holdings_without_cache_still_requires_login(monkeypatch, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
     monkeypatch.setattr(api_main, "get_settings", lambda: settings)
 
     class FakeClient:
