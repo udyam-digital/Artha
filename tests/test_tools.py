@@ -1,10 +1,13 @@
+import asyncio
 from pathlib import Path
 
 from config import Settings
 from tools import (
     MCPServerDefinition,
+    ToolExecutionError,
     _holding_market_value,
     extract_auth_url,
+    kite_get_price_history,
     load_kite_server_definition,
     profile_requires_login,
     save_kite_artifact,
@@ -69,3 +72,54 @@ def test_profile_requires_login_detects_hosted_message() -> None:
 def test_holding_market_value_falls_back_to_quantity_times_last_price() -> None:
     assert _holding_market_value({"quantity": 10, "last_price": 123.4}) == 1234.0
     assert _holding_market_value({"current_value": 999.0, "quantity": 10, "last_price": 123.4}) == 999.0
+
+
+class FakeKiteClient:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def call_tool(self, name, payload=None):
+        return self.payload
+
+
+def test_kite_get_price_history_returns_summary_only() -> None:
+    result = asyncio.run(
+        kite_get_price_history(
+            FakeKiteClient(
+                {
+                    "candles": [
+                        ["2025-03-01", 90, 100, 80, 95, 1000],
+                        ["2026-03-01", 100, 120, 85, 110, 1000],
+                    ]
+                }
+            ),
+            tradingsymbol="KPITTECH",
+            instrument_token=123,
+        )
+    )
+    assert set(result) == {
+        "52w_high",
+        "52w_low",
+        "current_vs_52w_high_pct",
+        "price_1y_ago",
+        "price_change_1y_pct",
+    }
+    assert result["52w_high"] == 120.0
+    assert result["52w_low"] == 80.0
+    assert result["price_1y_ago"] == 95.0
+    assert result["price_change_1y_pct"] > 0
+
+
+def test_kite_get_price_history_raises_on_empty_history() -> None:
+    try:
+        asyncio.run(
+            kite_get_price_history(
+                FakeKiteClient({"candles": []}),
+                tradingsymbol="KPITTECH",
+                instrument_token=123,
+            )
+        )
+    except ToolExecutionError as exc:
+        assert "No historical data available" in str(exc)
+    else:
+        raise AssertionError("Expected ToolExecutionError for empty historical data")

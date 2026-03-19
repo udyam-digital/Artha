@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictModel(BaseModel):
@@ -114,6 +114,20 @@ class AnalystRiskMatrix(StrictModel):
     cyclical_risks: list[str] = Field(default_factory=list)
     company_risks: list[str] = Field(default_factory=list)
     risk_level: Literal["Low", "Medium", "High"]
+
+    @field_validator("risk_level", mode="before")
+    @classmethod
+    def normalize_risk_level(cls, value: object) -> str:
+        normalized = str(value).strip()
+        mapping = {
+            "Medium-High": "High",
+            "medium-high": "High",
+            "MEDIUM-HIGH": "High",
+            "Medium-Low": "Low",
+            "medium-low": "Low",
+            "MEDIUM-LOW": "Low",
+        }
+        return mapping.get(normalized, normalized)
 
 
 class AnalystActionPlan(StrictModel):

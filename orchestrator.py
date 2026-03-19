@@ -18,7 +18,7 @@ from reliability import FullRunFailed, RetryFailure, run_with_retries
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from snapshot_store import company_analysis_path
 from tools import kite_get_price_history
-from usage_tracking import record_anthropic_usage, record_run_error
+from usage_tracking import log_estimated_input_tokens, record_anthropic_usage, record_run_error
 
 
 logger = logging.getLogger(__name__)
@@ -121,20 +121,22 @@ async def _build_portfolio_summary(
         "errors": errors,
     }
     subject = "portfolio" if len(verdicts) != 1 else "single-stock portfolio"
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                f"Write a concise 3-5 sentence summary for Saksham's Indian equity {subject}. "
+                "Do not redo analysis. Use only the supplied verdict JSON and mention the main concentration, "
+                "risk, and rebalance takeaways.\n"
+                f"Input JSON:\n{json.dumps(payload, ensure_ascii=True)}"
+            ),
+        }
+    ]
+    log_estimated_input_tokens(label="[portfolio_summary]", messages=messages)
     response = await client.messages.create(
         model=settings.model,
         max_tokens=min(settings.max_tokens, settings.summary_max_tokens),
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Write a concise 3-5 sentence summary for Saksham's Indian equity {subject}. "
-                    "Do not redo analysis. Use only the supplied verdict JSON and mention the main concentration, "
-                    "risk, and rebalance takeaways.\n"
-                    f"Input JSON:\n{json.dumps(payload, ensure_ascii=True)}"
-                ),
-            }
-        ],
+        messages=messages,
     )
     record_anthropic_usage(
         settings=settings,
@@ -223,23 +225,11 @@ async def run_full_analysis(
         ) from exc
 
     semaphore = asyncio.Semaphore(settings.analyst_parallelism)
-    analyst_start_lock = asyncio.Lock()
-    next_analyst_start_at = 0.0
 
-    async def throttle_analyst_start() -> None:
-        nonlocal next_analyst_start_at
-        min_interval_seconds = max(settings.analyst_min_start_interval_seconds, 0.0)
-        if min_interval_seconds <= 0:
-            return
-
-        async with analyst_start_lock:
-            now = time.monotonic()
-            delay_seconds = max(0.0, next_analyst_start_at - now)
-            if delay_seconds > 0:
-                await asyncio.sleep(delay_seconds)
-            next_analyst_start_at = time.monotonic() + min_interval_seconds
-
-    async def bounded_analyse(holding: Holding) -> StockVerdict:
+    async def bounded_analyse(holding: Holding, index: int) -> StockVerdict:
+        stagger_seconds = max(settings.analyst_min_start_interval_seconds, 0.0)
+        if stagger_seconds > 0:
+            await asyncio.sleep(index * stagger_seconds)
         async with semaphore:
             _, verdict, from_cache = await run_with_retries(
                 lambda: get_company_artifact_and_verdict(
@@ -248,7 +238,6 @@ async def run_full_analysis(
                     skills_content=skills_content,
                     client=client,
                     settings=settings,
-                    before_generate=throttle_analyst_start,
                 ),
                 attempts=settings.transient_retry_attempts,
                 base_delay_seconds=settings.transient_retry_base_delay_seconds,
@@ -261,8 +250,8 @@ async def run_full_analysis(
             return verdict
 
     task_to_symbol = {
-        asyncio.create_task(bounded_analyse(holding)): holding.tradingsymbol
-        for holding in equity_holdings
+        asyncio.create_task(bounded_analyse(holding, index)): holding.tradingsymbol
+        for index, holding in enumerate(equity_holdings)
     }
 
     ordered_verdicts: dict[str, StockVerdict] = {}

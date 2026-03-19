@@ -33,8 +33,8 @@ Model routing in `.env`:
 MODEL=claude-sonnet-4-6
 ANALYST_MODEL=claude-haiku-4-5
 ANALYST_MAX_TOKENS=2500
-ANALYST_PARALLELISM=1
-ANALYST_MIN_START_INTERVAL_SECONDS=65
+ANALYST_PARALLELISM=2
+ANALYST_MIN_START_INTERVAL_SECONDS=3
 SUMMARY_MAX_TOKENS=700
 COMPANY_ANALYSIS_MAX_AGE_DAYS=7
 TRANSIENT_RETRY_ATTEMPTS=3
@@ -92,6 +92,7 @@ LLM cost logging:
 - every run also appends one summary row to `reports/usage/run_summaries.jsonl` with total cost, total calls, phase/model breakdowns, and the daily usage log path
 - failed full runs also append one row to `reports/usage/run_errors.jsonl` with failed phase, ticker when available, retry count used, and error details
 - the CLI prints a per-run estimated LLM cost summary and the JSONL path after completion
+- before each Anthropic call, Artha logs a rough estimated input-token count so prompt blowups are visible immediately
 
 Observability and tracing:
 
@@ -105,9 +106,9 @@ Observability and tracing:
 
 1. Sync live equity holdings, MF holdings, cash, and profile from Kite
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
-3. Fetch 52-week price context once per analyzable equity holding
+3. Fetch one compact price-history summary once per analyzable equity holding: `52w_high`, `52w_low`, `current_vs_52w_high_pct`, `price_1y_ago`, `price_change_1y_pct`
 4. Check `data/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
-5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and native `web_search`, bounded by configurable parallelism and paced starts to stay within provider TPM limits
+5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and native `web_search`, using a compact analyst input payload plus staggered starts to stay within provider TPM limits
 6. Convert each cached or refreshed company artifact into a normalized Artha verdict
 7. Merge analyst verdicts with deterministic drift math to produce final action fields
 8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
@@ -166,8 +167,8 @@ Data layout:
 - `MODEL`: main Artha agent, portfolio synthesis, and deep-research orchestration defaults to `claude-sonnet-4-6`
 - `ANALYST_MODEL`: per-holding analyst sub-agents default to `claude-haiku-4-5`
 - `ANALYST_MAX_TOKENS`: lower output cap for company artifact generation
-- `ANALYST_PARALLELISM`: max concurrent analyst refresh jobs, default `1`
-- `ANALYST_MIN_START_INTERVAL_SECONDS`: minimum spacing between analyst refresh starts, default `65`
+- `ANALYST_PARALLELISM`: max concurrent analyst refresh jobs, default `2`
+- `ANALYST_MIN_START_INTERVAL_SECONDS`: per-holding stagger used before analyst refresh starts, default `3`
 - `SUMMARY_MAX_TOKENS`: lower output cap for the final Sonnet summary
 - `COMPANY_ANALYSIS_MAX_AGE_DAYS`: company-analysis cache freshness window, default `7`
 

@@ -292,7 +292,6 @@ async def test_run_full_analysis_respects_configured_analyst_parallelism(tmp_pat
     state = {"active": 0, "max_active": 0}
 
     async def fake_get_company_artifact_and_verdict(**kwargs):
-        await kwargs["before_generate"]()
         state["active"] += 1
         state["max_active"] = max(state["max_active"], state["active"])
         await asyncio.sleep(0)
@@ -362,7 +361,6 @@ async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatc
     start_times = []
 
     async def fake_get_company_artifact_and_verdict(**kwargs):
-        await kwargs["before_generate"]()
         start_times.append(asyncio.get_running_loop().time())
         symbol = kwargs["holding"].tradingsymbol
         return (

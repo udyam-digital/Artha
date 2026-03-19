@@ -147,6 +147,17 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 
+def estimate_input_tokens(*, messages: Any, system: Any | None = None) -> int:
+    estimate = (len(str(system or "")) + len(str(messages))) // 4
+    return max(estimate, 1)
+
+
+def log_estimated_input_tokens(*, label: str, messages: Any, system: Any | None = None) -> int:
+    estimate = estimate_input_tokens(messages=messages, system=system)
+    logger.info("%s estimated input tokens: ~%s", label, estimate)
+    return estimate
+
+
 def _summary_record(summary: UsageRunSummary, *, completed_at: datetime) -> dict[str, Any]:
     duration_seconds = (completed_at - summary.started_at).total_seconds()
     return {

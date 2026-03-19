@@ -385,11 +385,7 @@ async def kite_get_price_history(
             },
         )
     except Exception as exc:
-        logger.warning("Price history fetch failed for %s: %s", tradingsymbol, exc)
-        return {
-            "tradingsymbol": tradingsymbol,
-            "error": str(exc),
-        }
+        raise ToolExecutionError(f"Price history fetch failed for {tradingsymbol}: {exc}") from exc
 
     candles = _extract_holdings_payload(raw_history)
     if not candles and isinstance(raw_history, dict):
@@ -417,10 +413,7 @@ async def kite_get_price_history(
             )
 
     if not parsed:
-        return {
-            "tradingsymbol": tradingsymbol,
-            "error": "No historical data available",
-        }
+        raise ToolExecutionError(f"No historical data available for {tradingsymbol}")
 
     closes = [row["close"] for row in parsed if row["close"] > 0]
     highs = [row["high"] for row in parsed if row["high"] > 0]
@@ -431,7 +424,6 @@ async def kite_get_price_history(
     low_52w = min(lows) if lows else 0.0
 
     return {
-        "tradingsymbol": tradingsymbol,
         "52w_high": high_52w,
         "52w_low": low_52w,
         "current_vs_52w_high_pct": ((current_price / high_52w) - 1) * 100.0 if high_52w else 0.0,

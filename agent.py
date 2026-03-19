@@ -13,7 +13,7 @@ from config import Settings, get_settings
 from models import PortfolioReport, PortfolioSnapshot
 from rebalance import calculate_rebalancing_actions
 from tools import KiteMCPClient, execute_tool_call, get_tool_definitions, load_kite_server_definition
-from usage_tracking import record_anthropic_usage
+from usage_tracking import log_estimated_input_tokens, record_anthropic_usage
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,11 @@ class ArthaAgent:
         ) as kite_client:
             for iteration in range(1, self.settings.max_iterations + 1):
                 logger.info("Agent iteration %s/%s", iteration, self.settings.max_iterations)
+                log_estimated_input_tokens(
+                    label="[artha_agent]",
+                    messages=messages,
+                    system=self.system_prompt,
+                )
                 response = await self.client.messages.create(
                     model=self.settings.model,
                     max_tokens=self.settings.max_tokens,

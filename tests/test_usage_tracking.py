@@ -7,9 +7,11 @@ from types import SimpleNamespace
 from config import Settings
 import usage_tracking
 from usage_tracking import (
+    estimate_input_tokens,
     format_run_summary,
     format_usage_summary,
     get_current_usage_run,
+    log_estimated_input_tokens,
     load_recent_run_summaries,
     record_run_error,
     record_anthropic_usage,
@@ -142,6 +144,19 @@ def test_record_anthropic_usage_returns_none_when_usage_missing(tmp_path: Path) 
         model="claude-haiku-4-5",
         response=response,
     ) is None
+
+
+def test_estimated_input_tokens_helpers(tmp_path: Path, caplog) -> None:
+    del tmp_path
+    messages = [{"role": "user", "content": "hello"}]
+    estimate = estimate_input_tokens(messages=messages, system="system")
+    assert estimate > 0
+
+    with caplog.at_level("INFO"):
+        logged_estimate = log_estimated_input_tokens(label="[KPITTECH]", messages=messages, system="system")
+
+    assert logged_estimate == estimate
+    assert "[KPITTECH] estimated input tokens" in caplog.text
 
 
 def test_formatters_and_recent_summary_loading(tmp_path: Path) -> None:

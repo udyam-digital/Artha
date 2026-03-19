@@ -22,7 +22,7 @@ from models import (
 )
 from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_research_digest
 from tools import get_web_search_tool_definition
-from usage_tracking import record_anthropic_usage
+from usage_tracking import log_estimated_input_tokens, record_anthropic_usage
 
 
 logger = logging.getLogger(__name__)
@@ -203,6 +203,7 @@ class DeepResearchOrchestrator:
     ) -> str:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
         for iteration in range(1, self.settings.max_iterations + 1):
+            log_estimated_input_tokens(label=f"[{label}]", messages=messages, system=system)
             response = await self.client.messages.create(
                 model=self.settings.model,
                 max_tokens=self.settings.max_tokens,
@@ -236,19 +237,21 @@ class DeepResearchOrchestrator:
             "mf_reports": [report.model_dump(mode="json") for report in mf_reports],
             "errors": errors,
         }
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "Write a concise portfolio research digest for an Indian investor using the supplied "
+                    "holding reports. Cover major strengths, concentration risks, and what deserves follow-up. "
+                    f"Input JSON:\n{json.dumps(prompt, ensure_ascii=True)}"
+                ),
+            }
+        ]
+        log_estimated_input_tokens(label="[research_digest]", messages=messages)
         response = await self.client.messages.create(
             model=self.settings.model,
             max_tokens=min(self.settings.max_tokens, 2000),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Write a concise portfolio research digest for an Indian investor using the supplied "
-                        "holding reports. Cover major strengths, concentration risks, and what deserves follow-up. "
-                        f"Input JSON:\n{json.dumps(prompt, ensure_ascii=True)}"
-                    ),
-                }
-            ],
+            messages=messages,
         )
         record_anthropic_usage(
             settings=self.settings,

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from models import Holding, PortfolioReport, PortfolioSnapshot, StockVerdict
+from models import AnalystRiskMatrix, Holding, PortfolioReport, PortfolioSnapshot, StockVerdict
 
 
 def test_holding_validation() -> None:
@@ -86,3 +86,8 @@ def test_legacy_report_fields_are_rejected() -> None:
             total_sell_required=0.0,
             errors=[],
         )
+
+
+def test_risk_level_normalizes_extended_values() -> None:
+    assert AnalystRiskMatrix(risk_level="Medium-High").risk_level == "High"
+    assert AnalystRiskMatrix(risk_level="Medium-Low").risk_level == "Low"

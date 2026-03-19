@@ -12,7 +12,7 @@ from config import Settings
 from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
 from snapshot_store import save_company_analysis_artifact
 from tools import get_web_search_tool_definition
-from usage_tracking import record_anthropic_usage
+from usage_tracking import log_estimated_input_tokens, record_anthropic_usage
 
 
 logger = logging.getLogger(__name__)
@@ -277,49 +277,38 @@ async def generate_company_artifact(
     started = time.perf_counter()
     logger.info("[%s] starting analysis", holding.tradingsymbol)
 
-    has_portfolio_context = any(
-        (
-            holding.quantity,
-            holding.average_price,
-            holding.current_value,
-            holding.current_weight_pct,
-            holding.target_weight_pct,
-            holding.pnl,
-            holding.pnl_pct,
+    user_prompt = (
+        "Analyse this Indian stock using web search and return exactly one valid JSON object only.\n"
+        "Input JSON:\n"
+        + json.dumps(
+            {
+                "tradingsymbol": holding.tradingsymbol,
+                "exchange": holding.exchange,
+                "quantity": holding.quantity,
+                "average_price": holding.average_price,
+                "last_price": holding.last_price,
+                "pnl": holding.pnl,
+                "pnl_pct": holding.pnl_pct,
+                "current_weight_pct": holding.current_weight_pct,
+                "target_weight_pct": holding.target_weight_pct,
+                "drift": round(holding.current_weight_pct - holding.target_weight_pct, 3),
+                "52w_high": price_context.get("52w_high", 0.0),
+                "52w_low": price_context.get("52w_low", 0.0),
+                "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct", 0.0),
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
         )
     )
-    portfolio_context = ""
-    if has_portfolio_context:
-        portfolio_context = f"""
-    Portfolio context:
-    Quantity held: {holding.quantity}
-    Average buy price: ₹{holding.average_price}
-    Current price: ₹{holding.last_price}
-    Current value: ₹{holding.current_value}
-    P&L: ₹{holding.pnl} ({holding.pnl_pct:.1f}%)
-    Current portfolio weight: {holding.current_weight_pct:.1f}%
-    Target portfolio weight: {holding.target_weight_pct:.1f}%
-    Drift from target: {holding.current_weight_pct - holding.target_weight_pct:+.1f}%
-"""
-
-    user_prompt = f"""
-    Analyse this stock for Saksham:
-
-    Stock: {holding.tradingsymbol}
-    Exchange: {holding.exchange}
-{portfolio_context}
-    52-week context:
-    52w High: ₹{price_context.get('52w_high', 'N/A')}
-    52w Low: ₹{price_context.get('52w_low', 'N/A')}
-    Current vs 52w High: {price_context.get('current_vs_52w_high_pct', 'N/A')}%
-
-    If portfolio context is missing, treat this as a standalone unbiased research request.
-    Research this stock using web search and return a valid JSON object only.
-    """
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
 
     for iteration in range(1, MAX_ANALYST_ITERATIONS + 1):
+        log_estimated_input_tokens(
+            label=f"[{holding.tradingsymbol}]",
+            messages=messages,
+            system=skills_content,
+        )
         response = await client.messages.create(
             model=config.analyst_model,
             max_tokens=config.analyst_max_tokens,

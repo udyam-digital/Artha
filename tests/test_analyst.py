@@ -192,6 +192,44 @@ async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
     assert client.calls[0]["model"] == "claude-haiku-4-5"
 
 
+async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> None:
+    client = FakeAnthropicClient(
+        [
+            SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text=make_report_card_json("KPITTECH"))],
+            )
+        ]
+    )
+    await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={
+            "52w_high": 100.0,
+            "52w_low": 60.0,
+            "current_vs_52w_high_pct": -20.0,
+            "price_1y_ago": 70.0,
+            "price_change_1y_pct": 14.0,
+            "candles": [1, 2, 3],
+        },
+        skills_content="system",
+        client=client,  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    prompt = client.calls[0]["messages"][0]["content"]
+    assert '"tradingsymbol":"KPITTECH"' in prompt
+    assert '"exchange":"NSE"' in prompt
+    assert '"quantity":10' in prompt
+    assert '"drift":-2.0' in prompt
+    assert '"52w_high":100.0' in prompt
+    assert '"52w_low":60.0' in prompt
+    assert '"current_vs_52w_high_pct":-20.0' in prompt
+    assert "current_value" not in prompt
+    assert "price_1y_ago" not in prompt
+    assert "price_change_1y_pct" not in prompt
+    assert "candles" not in prompt
+
+
 async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
     response = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="invalid")])
     verdict = await analyse_stock(
