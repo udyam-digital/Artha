@@ -13,6 +13,7 @@ from config import Settings, get_settings
 from models import PortfolioReport, PortfolioSnapshot
 from rebalance import calculate_rebalancing_actions
 from tools import KiteMCPClient, execute_tool_call, get_tool_definitions, load_kite_server_definition
+from usage_tracking import record_anthropic_usage
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,13 @@ class ArthaAgent:
                     system=self.system_prompt,
                     messages=messages,
                     tools=self.tools,
+                )
+                record_anthropic_usage(
+                    settings=self.settings,
+                    label="artha_agent",
+                    model=self.settings.model,
+                    response=response,
+                    metadata={"phase": "agent", "iteration": iteration, "ticker": ticker},
                 )
 
                 stop_reason = getattr(response, "stop_reason", None)

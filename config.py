@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=8096, alias="MAX_TOKENS")
     max_iterations: int = Field(default=10, alias="MAX_ITERATIONS")
     reports_dir: Path = Field(default=ROOT_DIR / "reports", alias="REPORTS_DIR")
+    llm_usage_dir: Path = Field(default=ROOT_DIR / "reports" / "usage", alias="LLM_USAGE_DIR")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     kite_mcp_url: str = Field(default=DEFAULT_KITE_MCP_URL, alias="KITE_MCP_URL")
     kite_mcp_command: str = Field(default="", alias="KITE_MCP_COMMAND")
@@ -96,6 +97,7 @@ def get_settings() -> Settings:
     load_dotenv()
     settings = Settings()
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    settings.llm_usage_dir.mkdir(parents=True, exist_ok=True)
     settings.kite_data_dir.mkdir(parents=True, exist_ok=True)
     return settings
 

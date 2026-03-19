@@ -174,7 +174,7 @@ These recommendations position Artha as a world-class AI-powered portfolio analy
 - Emit one structured log event per analyst completion with symbol, duration, verdict, confidence, action, and error state. That will make the parallel run easy to inspect in production-like environments.
 - Track orchestrator-level counters for analyzed equities, excluded ETFs, MF holdings, analyst failures, and total synthesis time.
 - Add a lightweight timing breakdown to the saved report payload or sidecar artifact so portfolio sync, price-context fetch, analyst fan-out, and final synthesis can be compared over time.
-- Persist per-call token usage to a small JSONL or CSV artifact instead of logs only. That will make it much easier to confirm that cache reuse and token caps are reducing cost in practice.
+- Per-call Anthropic usage now belongs in a JSONL ledger. Keep building on that by adding a tiny rollup script or notebook that groups cost by command, ticker, model, and prompt phase so optimization work is driven by real spend, not intuition.
 
 ### Research Quality
 - Add source-domain ranking for analyst sub-agents so exchange filings, investor presentations, earnings releases, and Screener evidence are preferred over generic market-news summaries.

@@ -12,6 +12,7 @@ from config import Settings
 from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
 from snapshot_store import save_company_analysis_artifact
 from tools import get_web_search_tool_definition
+from usage_tracking import record_anthropic_usage
 
 
 logger = logging.getLogger(__name__)
@@ -234,15 +235,20 @@ def _materialize_tool_results(response: Any) -> list[dict[str, Any]]:
     return tool_results
 
 
-def _log_response_usage(*, label: str, response: Any) -> None:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return
-    logger.info(
-        "%s token usage: input=%s output=%s",
-        label,
-        getattr(usage, "input_tokens", "unknown"),
-        getattr(usage, "output_tokens", "unknown"),
+def _log_response_usage(
+    *,
+    label: str,
+    model: str,
+    response: Any,
+    settings: Settings,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    record_anthropic_usage(
+        settings=settings,
+        label=label,
+        model=model,
+        response=response,
+        metadata=metadata,
     )
 
 
@@ -321,7 +327,17 @@ async def generate_company_artifact(
             messages=messages,
             tools=[get_web_search_tool_definition()],
         )
-        _log_response_usage(label=f"[{holding.tradingsymbol}] analyst", response=response)
+        _log_response_usage(
+            label=f"[{holding.tradingsymbol}] analyst",
+            model=config.analyst_model,
+            response=response,
+            settings=config,
+            metadata={
+                "phase": "analyst",
+                "ticker": holding.tradingsymbol,
+                "iteration": iteration,
+            },
+        )
         stop_reason = getattr(response, "stop_reason", None)
 
         if stop_reason == "pause_turn":

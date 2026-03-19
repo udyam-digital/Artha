@@ -16,6 +16,7 @@ from kite_runtime import KiteSyncResult, build_kite_client, sync_kite_data
 from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from tools import kite_get_price_history
+from usage_tracking import record_anthropic_usage
 
 
 logger = logging.getLogger(__name__)
@@ -129,13 +130,18 @@ async def _build_portfolio_summary(
             }
         ],
     )
-    usage = getattr(response, "usage", None)
-    if usage is not None:
-        logger.info(
-            "summary token usage: input=%s output=%s",
-            getattr(usage, "input_tokens", "unknown"),
-            getattr(usage, "output_tokens", "unknown"),
-        )
+    record_anthropic_usage(
+        settings=settings,
+        label="portfolio_summary",
+        model=settings.model,
+        response=response,
+        metadata={
+            "phase": "portfolio_summary",
+            "equity_count": len(snapshot.holdings),
+            "mf_count": len(mf_symbols),
+            "error_count": len(errors),
+        },
+    )
     text_parts = [
         getattr(block, "text", "")
         for block in getattr(response, "content", [])

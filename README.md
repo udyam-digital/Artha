@@ -35,6 +35,7 @@ ANALYST_MODEL=claude-haiku-4-5
 ANALYST_MAX_TOKENS=2500
 SUMMARY_MAX_TOKENS=700
 COMPANY_ANALYSIS_MAX_AGE_DAYS=7
+LLM_USAGE_DIR=./reports/usage
 ```
 
 Authenticate and sync fresh snapshots:
@@ -69,6 +70,12 @@ Supported flows:
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Anthropic native `web_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
+
+LLM cost logging:
+
+- `run`, `run --ticker`, and `research` now append one JSON object per Anthropic call under `reports/usage/llm_usage_YYYYMMDD.jsonl`
+- each entry records run id, command, label, model, input/output tokens, cache tokens, web-search count, and estimated USD cost
+- the CLI prints a per-run estimated LLM cost summary and the JSONL path after completion
 
 ## Architecture
 
@@ -118,6 +125,7 @@ Company artifact cache:
 - `data/companies/{ticker}.json` stores strict JSON with metadata and a validated analyst report card
 - artifacts are reused for up to `COMPANY_ANALYSIS_MAX_AGE_DAYS` days
 - old Python-code-style analyst payloads are not reused; they are treated as invalid cache and refreshed
+- `reports/usage/llm_usage_YYYYMMDD.jsonl` stores the per-call Anthropic usage ledger used for cost analysis
 
 Data layout:
 

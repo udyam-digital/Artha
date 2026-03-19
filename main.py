@@ -18,6 +18,7 @@ from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from research import DeepResearchOrchestrator
 from snapshot_store import load_latest_portfolio_snapshot
 from tools import ToolExecutionError
+from usage_tracking import format_usage_summary, usage_run
 
 logger = logging.getLogger(__name__)
 
@@ -256,13 +257,17 @@ async def handle_run(args: argparse.Namespace) -> int:
         return 0
 
     if args.ticker:
-        report = await run_single_company_analysis(
-            settings=settings,
-            ticker=args.ticker,
-            exchange=getattr(args, "exchange", "NSE"),
-        )
+        with usage_run(settings=settings, command=f"run --ticker {args.ticker.upper()}") as usage_summary:
+            report = await run_single_company_analysis(
+                settings=settings,
+                ticker=args.ticker,
+                exchange=getattr(args, "exchange", "NSE"),
+            )
         output_path = save_report(report, settings.reports_dir)
         print_report(report)
+        print()
+        print(format_usage_summary(usage_summary))
+        print(f"LLM usage log saved to: {usage_summary.usage_path}")
         print()
         print(f"JSON report saved to: {output_path}")
         return 0
@@ -275,7 +280,8 @@ async def handle_run(args: argparse.Namespace) -> int:
             f"✓ {verdict.verdict.value:<9} ({verdict.analysis_duration_seconds:.1f}s)"
         )
 
-    report = await run_full_analysis(settings, progress_callback=progress_callback)
+    with usage_run(settings=settings, command="run") as usage_summary:
+        report = await run_full_analysis(settings, progress_callback=progress_callback)
 
     output_path = save_report(report, settings.reports_dir)
     print()
@@ -285,6 +291,9 @@ async def handle_run(args: argparse.Namespace) -> int:
         f"Completed in {time.perf_counter() - started:.1f}s | "
         f"{len(report.verdicts)} analysts | {len(report.errors)} errors"
     )
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
     print()
     print(f"JSON report saved to: {output_path}")
     return 0
@@ -323,9 +332,14 @@ async def handle_kite_login() -> int:
 
 
 async def handle_research() -> int:
-    orchestrator = DeepResearchOrchestrator(settings=get_settings())
-    digest, digest_path, holding_paths, index_path = await orchestrator.research_latest_snapshots()
+    settings = get_settings()
+    orchestrator = DeepResearchOrchestrator(settings=settings)
+    with usage_run(settings=settings, command="research") as usage_summary:
+        digest, digest_path, holding_paths, index_path = await orchestrator.research_latest_snapshots()
     print_research_result(digest, digest_path, holding_paths, index_path)
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
     return 0
 
 

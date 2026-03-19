@@ -22,6 +22,7 @@ from models import (
 )
 from snapshot_store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_research_digest
 from tools import get_web_search_tool_definition
+from usage_tracking import record_anthropic_usage
 
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,12 @@ class DeepResearchOrchestrator:
             "Return exactly one JSON object wrapped in <equity_research>...</equity_research> tags with keys: "
             "identifier, title, data_freshness, sources, bull_case, bear_case, what_to_watch, red_flags, confidence_summary."
         )
-        raw_text = await self._run_tool_loop(system=system, user_prompt=user_prompt)
+        raw_text = await self._run_tool_loop(
+            system=system,
+            user_prompt=user_prompt,
+            label=f"research_equity:{holding.tradingsymbol}",
+            metadata={"phase": "research_equity", "ticker": holding.tradingsymbol},
+        )
         payload = self._extract_tagged_json(raw_text, "equity_research", holding.tradingsymbol)
         report = EquityResearchArtifact(
             generated_at=datetime.now(timezone.utc),
@@ -152,7 +158,16 @@ class DeepResearchOrchestrator:
             "identifier, title, data_freshness, sources, fund_house, category, mandate, portfolio_style, "
             "expense_ratio_note, aum_note, overlap_risk, recent_commentary, risks, confidence_summary."
         )
-        raw_text = await self._run_tool_loop(system=system, user_prompt=user_prompt)
+        raw_text = await self._run_tool_loop(
+            system=system,
+            user_prompt=user_prompt,
+            label=f"research_mf:{holding.tradingsymbol or holding.fund}",
+            metadata={
+                "phase": "research_mf",
+                "fund": holding.fund,
+                "tradingsymbol": holding.tradingsymbol,
+            },
+        )
         payload = self._extract_tagged_json(raw_text, "mf_research", holding.fund)
         report = MFResearchArtifact(
             generated_at=datetime.now(timezone.utc),
@@ -178,7 +193,14 @@ class DeepResearchOrchestrator:
         )
         return report
 
-    async def _run_tool_loop(self, *, system: str, user_prompt: str) -> str:
+    async def _run_tool_loop(
+        self,
+        *,
+        system: str,
+        user_prompt: str,
+        label: str,
+        metadata: dict[str, Any],
+    ) -> str:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
         for iteration in range(1, self.settings.max_iterations + 1):
             response = await self.client.messages.create(
@@ -187,6 +209,13 @@ class DeepResearchOrchestrator:
                 system=system,
                 messages=messages,
                 tools=[self.web_search_tool],
+            )
+            record_anthropic_usage(
+                settings=self.settings,
+                label=label,
+                model=self.settings.model,
+                response=response,
+                metadata={**metadata, "iteration": iteration},
             )
             stop_reason = getattr(response, "stop_reason", None)
             if stop_reason == "pause_turn":
@@ -220,6 +249,18 @@ class DeepResearchOrchestrator:
                     ),
                 }
             ],
+        )
+        record_anthropic_usage(
+            settings=self.settings,
+            label="research_digest",
+            model=self.settings.model,
+            response=response,
+            metadata={
+                "phase": "research_digest",
+                "equity_report_count": len(equity_reports),
+                "mf_report_count": len(mf_reports),
+                "error_count": len(errors),
+            },
         )
         return self._extract_text(response) or "No research digest generated."
 
