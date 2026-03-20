@@ -47,10 +47,14 @@ OUTPUT STRUCTURE:
   },
 
   "growth_engine": {
-    "revenue_cagr": "",
-    "eps_cagr": "",
+    "revenue_cagr": "Use most recent 2-3 quarter trend, NOT 3-year historical CAGR",
+    "eps_cagr": "Use most recent 2-3 quarter trend, NOT 3-year historical CAGR",
     "sector_tailwind": "High/Medium/Low",
     "growth_score": 1
+    // Score current momentum ONLY (1-10).
+    // Last 2 quarters YoY profit DECLINE → cap at 4.
+    // Flat or single-digit growth → cap at 6.
+    // Accelerating double-digit growth → 7-10.
   },
 
   "quality": {
@@ -121,17 +125,17 @@ OUTPUT STRUCTURE:
 
 STEP 1:
 Analyze the stock deeply using:
-- Growth
+- Growth (CURRENT trajectory — last 2-3 quarters, not historical CAGR)
 - Quality
-- Valuation
+- Valuation (use TTM earnings, not peak-year earnings)
 - Timing
 - Capital efficiency
 - Use `tavily_search` to research this stock.
-- Maximum 3 searches.
-- Suggested queries:
-  1. `{ticker} latest quarterly results FY25`
-  2. `{ticker} screener.in fundamentals ROCE debt`
-  3. `{ticker} recent news management commentary 2025`
+- Maximum 3 searches. Use all 3.
+- Queries MUST use these in order:
+  1. `{ticker} quarterly results Q3 FY26 latest earnings profit revenue`
+  2. `{ticker} fundamentals ROCE debt valuation PE ratio`
+  3. `{ticker} competitor sector risk regulatory news 2026`
 
 STEP 2:
 Fill ALL fields properly.

@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import Field
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,6 +57,14 @@ class Settings(BaseSettings):
     kite_data_dir: Path = Field(default=ROOT_DIR / "data" / "kite", alias="KITE_DATA_DIR")
     kite_login_timeout_seconds: int = Field(default=180, alias="KITE_LOGIN_TIMEOUT_SECONDS")
     kite_login_poll_interval_seconds: int = Field(default=3, alias="KITE_LOGIN_POLL_INTERVAL_SECONDS")
+
+    @model_validator(mode="after")
+    def resolve_relative_paths(self) -> "Settings":
+        for attr in ("reports_dir", "llm_usage_dir", "kite_data_dir"):
+            p: Path = getattr(self, attr)
+            if not p.is_absolute():
+                object.__setattr__(self, attr, ROOT_DIR / p)
+        return self
 
     @field_validator("kite_mcp_url", mode="before")
     @classmethod
@@ -171,7 +178,7 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    load_dotenv()
+    load_dotenv(ROOT_DIR / ".env")
     settings = Settings()
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     settings.llm_usage_dir.mkdir(parents=True, exist_ok=True)
