@@ -165,6 +165,7 @@ class AnalystReportCard(StrictModel):
     final_verdict: AnalystFinalVerdict
     monitoring: AnalystMonitoring
     data_sources: list[str] = Field(default_factory=list)
+    source_map: dict[str, str] = Field(default_factory=dict)
 
 
 class CompanyAnalysisArtifact(StrictModel):

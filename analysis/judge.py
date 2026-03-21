@@ -80,7 +80,7 @@ async def judge_report_card(
     try:
         response = await raw_client.messages.create(
             model=config.analyst_model,
-            max_tokens=768,
+            max_tokens=1024,
             messages=[
                 {
                     "role": "user",
@@ -116,22 +116,31 @@ and internal data consistency. Return ONLY valid JSON — no markdown fences, no
 SCORING RUBRIC:
 
 source_grounding (0-100):
-  - Are key claims (revenue, EPS, ROCE, PE) backed by specific URLs in data_sources? → required for >60
-  - Are there 2+ real URLs? → required for >50
-  - Do URLs look like real financial sites (screener.in, moneycontrol.com, trendlyne.com, tickertape.in, etc.)? → high score
-  - Generic or placeholder URLs → max 20
+  - Does source_map exist with 5+ entries mapping metric names (revenue_cagr, roce, pe, etc.) to URLs? → required for >80
+  - Do source_map URLs match entries in data_sources? → required for >70
+  - Are there 3+ real URLs in data_sources? → required for >50
+  - Do URLs look like real Indian financial sites (screener.in, moneycontrol.com, trendlyne.com, tickertape.in, bseindia.com)? → high score
+  - Each claimed number (ROCE, PE, revenue growth, EPS) should have a source_map entry pointing to a real URL → required for >90
+  - Generic or placeholder URLs, or empty source_map → max 20
 
 hallucination_risk (0-100, inverted — high = good, low = bad):
   - Are numerical claims (growth rates, PE ratios, fair values) plausible given the sector? → high score
-  - Are there fabricated-looking specifics (exact quarterly numbers) with no matching data_source? → deduct 30
+  - Are there fabricated-looking specifics (exact quarterly numbers, competitor cost advantages) with no matching data_source or source_map entry? → deduct 30
   - Does revenue_cagr / eps_cagr look realistic for the sector and market cap? → check
+  - Does eps_cagr reference per-share EPS (not absolute net profit in crores)? Confusing net profit with EPS → deduct 20
+  - Is a "5-year CAGR" or "3-year CAGR" cited? Historical multi-year CAGR is stale data → deduct 15
   - Outlandish fair_value_range vs current_price → deduct 20
+  - Claims about analyst targets, FII positions, or competitor data without a source_map entry → deduct 15 each
+  - Claims of "market leader", "monopolistic position", or competitive superiority without sourced evidence → deduct 10
 
 data_consistency (0-100):
   - Do growth_score, quality_score, rvs_score internally align with raw metrics (ROCE, PE, etc.)?
   - Does fair_value_range make sense vs current_price and PE? → check
-  - Is margin_of_safety consistent with fair_value_range vs current_price? → check
+  - Is margin_of_safety consistent with fair_value_range vs current_price? Recalculate: (midpoint - price)/price*100. If the sign or magnitude is wrong by >5pp → deduct 20
   - Does risk_level align with the risks listed? → check
+  - Are source_map entries consistent with the actual field values they claim to source? → check
+  - Action plan zone ordering: stop_loss < buy_zone < add_zone < trim_zone? Violations → deduct 15
+  - For HOLD verdict: is add_zone above current_price while margin_of_safety is negative? → deduct 10 (incoherent)
 
 Return this exact JSON:
 {{
@@ -162,7 +171,7 @@ async def judge_factual_grounding(
     try:
         response = await raw_client.messages.create(
             model=config.analyst_model,
-            max_tokens=768,
+            max_tokens=1536,
             messages=[
                 {
                     "role": "user",

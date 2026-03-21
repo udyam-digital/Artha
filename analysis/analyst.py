@@ -99,6 +99,108 @@ async def _log_input_tokens(
     logger.info("%s exact input tokens: %s", label, exact)
 
 
+_SOURCE_MAP_KEY_ALIASES: dict[str, str] = {
+    # revenue_cagr aliases
+    "revenue": "revenue_cagr", "revenue_growth": "revenue_cagr", "revenue_yoy": "revenue_cagr",
+    "q3_fy26_revenue": "revenue_cagr", "q2_fy26_revenue": "revenue_cagr", "q4_fy26_revenue": "revenue_cagr",
+    "q3_revenue": "revenue_cagr", "revenue_cagr_source": "revenue_cagr",
+    # eps_cagr aliases
+    "eps": "eps_cagr", "eps_growth": "eps_cagr", "net_profit": "eps_cagr",
+    "q3_fy26_netprofit": "eps_cagr", "q3_diluted_eps": "eps_cagr", "eps_cagr_source": "eps_cagr",
+    "q3_fy26_eps": "eps_cagr", "netprofit": "eps_cagr",
+    # roce aliases
+    "roce_source": "roce", "return_on_capital": "roce",
+    # roe aliases
+    "roe_source": "roe", "return_on_equity": "roe",
+    # pe aliases
+    "pe_ratio": "pe", "pe_source": "pe", "trailing_pe": "pe",
+    # peg aliases
+    "peg_ratio": "peg", "peg_source": "peg",
+    # fcf_yield aliases
+    "fcf": "fcf_yield", "free_cash_flow": "fcf_yield", "fcf_yield_source": "fcf_yield",
+    # debt_to_equity aliases
+    "de_ratio": "debt_to_equity", "debt_equity": "debt_to_equity", "d_e_ratio": "debt_to_equity",
+    "debt_to_equity_source": "debt_to_equity",
+    # fair_value aliases
+    "fair_value_range": "fair_value", "fair_value_source": "fair_value", "valuation": "fair_value",
+    # risk_1 aliases
+    "risk": "risk_1", "primary_risk": "risk_1", "risk_1_source": "risk_1",
+    # analyst_target aliases
+    "target_price": "analyst_target", "consensus_target": "analyst_target",
+    # market_share aliases
+    "market_position": "market_share", "competitive_position": "market_share",
+}
+
+REQUIRED_SOURCE_MAP_KEYS = [
+    "revenue_cagr", "eps_cagr", "roce", "roe", "pe", "peg",
+    "fcf_yield", "debt_to_equity", "fair_value", "risk_1",
+    "analyst_target", "market_share",
+]
+
+
+def _is_valid_source_map_value(value: str) -> bool:
+    """Check if a source_map value is a URL or 'Not available' (not a data value)."""
+    v = value.strip()
+    return v.startswith("http") or v.lower() == "not available"
+
+
+def _normalize_source_map_keys(source_map: dict[str, str]) -> dict[str, str]:
+    """Normalize LLM-generated source_map keys to the 12 required standard keys.
+    Also filters out data values (non-URLs) that the LLM sometimes puts in source_map."""
+    normalized: dict[str, str] = {}
+    # First pass: copy entries with standard keys (only if value is URL or "Not available")
+    for key, value in source_map.items():
+        if not _is_valid_source_map_value(value):
+            continue  # Skip data values like "₹319 cr, +20% YoY"
+        lower_key = key.lower().strip()
+        if lower_key in REQUIRED_SOURCE_MAP_KEYS:
+            if lower_key not in normalized or normalized[lower_key] == "Not available":
+                normalized[lower_key] = value
+        else:
+            # Try alias mapping
+            mapped = _SOURCE_MAP_KEY_ALIASES.get(lower_key)
+            if mapped and (mapped not in normalized or normalized[mapped] == "Not available"):
+                normalized[mapped] = value
+    # Ensure all 12 required keys exist
+    for key in REQUIRED_SOURCE_MAP_KEYS:
+        if key not in normalized:
+            normalized[key] = "Not available"
+    return normalized
+
+
+def _extract_source_map_from_raw(raw_text: str) -> dict[str, str]:
+    """Extract source_map from raw LLM JSON text before instructor coercion can drop it."""
+    try:
+        parsed = json.loads(raw_text)
+        sm = parsed.get("source_map", {})
+        if isinstance(sm, dict):
+            return {str(k): str(v) for k, v in sm.items()}
+    except (json.JSONDecodeError, Exception):
+        pass
+    # Fallback: try to find source_map in partial JSON
+    import re
+    match = re.search(r'"source_map"\s*:\s*\{([^}]+)\}', raw_text, re.DOTALL)
+    if match:
+        try:
+            sm = json.loads("{" + match.group(1) + "}")
+            return {str(k): str(v) for k, v in sm.items()}
+        except (json.JSONDecodeError, Exception):
+            pass
+    return {}
+
+
+def _extract_data_sources_from_raw(raw_text: str) -> list[str]:
+    """Extract data_sources from raw LLM JSON text as backup."""
+    try:
+        parsed = json.loads(raw_text)
+        ds = parsed.get("data_sources", [])
+        if isinstance(ds, list):
+            return [str(u) for u in ds if str(u).startswith("http")]
+    except (json.JSONDecodeError, Exception):
+        pass
+    return []
+
+
 async def _coerce_report_card_with_instructor(
     *,
     instructor_client: Any,
@@ -106,12 +208,17 @@ async def _coerce_report_card_with_instructor(
     holding: Holding,
     raw_text: str,
 ) -> tuple[AnalystReportCard, Any]:
+    # Pre-extract source_map and data_sources from raw text before instructor may drop them
+    raw_source_map = _extract_source_map_from_raw(raw_text)
+    raw_data_sources = _extract_data_sources_from_raw(raw_text)
+
     messages = [
         {
             "role": "user",
             "content": (
                 "Convert the following stock analysis draft into a valid AnalystReportCard JSON object. "
-                "Use only facts present in the draft. Do not add commentary outside the schema.\n"
+                "Use only facts present in the draft. Do not add commentary outside the schema. "
+                "IMPORTANT: Preserve all data_sources URLs and source_map entries from the draft exactly as written.\n"
                 f"Ticker: {holding.tradingsymbol}\n"
                 f"Draft:\n{raw_text}"
             ),
@@ -124,12 +231,36 @@ async def _coerce_report_card_with_instructor(
         messages=messages,
     )
     if hasattr(instructor_client.messages, "create_with_completion"):
-        return await instructor_client.messages.create_with_completion(
+        report_card, completion = await instructor_client.messages.create_with_completion(
             response_model=AnalystReportCard,
             model=config.analyst_model,
             max_tokens=config.analyst_max_tokens,
             messages=messages,
         )
+        # Re-inject source_map if instructor dropped it or lost entries
+        if raw_source_map:
+            if not report_card.source_map:
+                report_card.source_map = raw_source_map
+                logger.info("[%s] re-injected source_map (%d entries) from raw text", holding.tradingsymbol, len(raw_source_map))
+            else:
+                # Merge any missing keys from raw
+                for k, v in raw_source_map.items():
+                    if k not in report_card.source_map:
+                        report_card.source_map[k] = v
+        # Normalize non-standard source_map keys to required standard keys
+        report_card.source_map = _normalize_source_map_keys(report_card.source_map)
+        # Re-inject data_sources if instructor dropped them
+        if not report_card.data_sources and raw_data_sources:
+            report_card.data_sources = raw_data_sources
+            logger.info("[%s] re-injected data_sources (%d URLs) from raw text", holding.tradingsymbol, len(raw_data_sources))
+        elif raw_data_sources:
+            # Merge any missing URLs
+            existing = set(report_card.data_sources)
+            for url in raw_data_sources:
+                if url not in existing:
+                    report_card.data_sources.append(url)
+                    existing.add(url)
+        return report_card, completion
     response = await instructor_client.messages.create(
         response_model=AnalystReportCard,
         model=config.analyst_model,
@@ -290,14 +421,27 @@ def _build_fallback_verdict(
     )
 
 
+def _extract_urls_from_search_result(text: str) -> list[str]:
+    """Extract URLs from Tavily search result text (lines starting with 'URL: ')."""
+    urls: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("URL: "):
+            url = stripped[5:].strip()
+            if url and url.startswith("http"):
+                urls.append(url)
+    return urls
+
+
 def _materialize_tool_results(
     response: Any,
     *,
     config: Settings,
     search_budget_remaining: int,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, list[str]]:
     tool_results: list[dict[str, Any]] = []
     searches_used = 0
+    collected_urls: list[str] = []
     for block in getattr(response, "content", []):
         if getattr(block, "type", None) != "tool_use":
             continue
@@ -339,6 +483,7 @@ def _materialize_tool_results(
             payload = result
             is_error = False
             searches_used += 1
+            collected_urls.extend(_extract_urls_from_search_result(result))
         except Exception as exc:
             payload = json.dumps({"error": str(exc)}, ensure_ascii=True)
             is_error = True
@@ -351,7 +496,7 @@ def _materialize_tool_results(
                 **({"is_error": True} if is_error else {}),
             }
         )
-    return tool_results, searches_used
+    return tool_results, searches_used, collected_urls
 
 
 def _log_response_usage(
@@ -369,6 +514,84 @@ def _log_response_usage(
         response=response,
         metadata=metadata,
     )
+
+
+def _backfill_source_map_from_urls(
+    report_card: AnalystReportCard,
+    collected_urls: list[str],
+) -> AnalystReportCard:
+    """Try to fill 'Not available' source_map entries using heuristics on collected URLs.
+
+    Maps financial data site URLs to metrics based on known URL patterns:
+    - screener.in, moneycontrol.com ratios pages → roce, roe, pe, debt_to_equity, fcf_yield
+    - trendlyne.com, tickertape.in → pe, peg, fair_value
+    - livemint.com, bseindia.com results → revenue_cagr, eps_cagr
+    - General results/earnings articles → revenue_cagr, eps_cagr
+    """
+    # Build a pool of available URLs (data_sources + collected)
+    url_pool = list(dict.fromkeys(list(report_card.data_sources) + collected_urls))
+
+    # Define heuristic URL→metric mappings
+    url_metric_hints: list[tuple[list[str], list[str]]] = [
+        (["screener.in", "stockanalysis.com", "moneycontrol.com/financials"], ["roce", "roe", "pe", "debt_to_equity", "fcf_yield", "peg"]),
+        (["trendlyne.com", "tickertape.in"], ["pe", "peg", "fair_value"]),
+        (["livemint.com", "bseindia.com", "nseindia.com"], ["revenue_cagr", "eps_cagr"]),
+        (["results", "earnings", "quarterly", "q3", "q2", "q4"], ["revenue_cagr", "eps_cagr"]),
+        (["analyst", "target", "consensus", "rating"], ["analyst_target"]),
+        (["risk", "outlook", "competitor"], ["risk_1"]),
+    ]
+
+    for url in url_pool:
+        url_lower = url.lower()
+        for patterns, metric_keys in url_metric_hints:
+            if any(p in url_lower for p in patterns):
+                for mk in metric_keys:
+                    if report_card.source_map.get(mk) == "Not available":
+                        report_card.source_map[mk] = url
+                        break  # Only fill one metric per URL pattern match
+
+    return report_card
+
+
+def _sync_source_map_to_data_sources(report_card: AnalystReportCard) -> AnalystReportCard:
+    """Ensure every URL in source_map also appears in data_sources."""
+    existing = set(report_card.data_sources)
+    added: list[str] = []
+    for url in report_card.source_map.values():
+        if url and url.startswith("http") and url not in existing:
+            added.append(url)
+            existing.add(url)
+    if added:
+        report_card.data_sources = list(report_card.data_sources) + added
+    return report_card
+
+
+def _fix_internal_consistency(report_card: AnalystReportCard) -> AnalystReportCard:
+    """Deterministic post-processing to fix common LLM internal inconsistencies."""
+    # 1. Recalculate margin_of_safety from fair_value_range and current_price
+    fv = report_card.valuation.fair_value_range
+    price = report_card.stock_snapshot.current_price
+    if len(fv) == 2 and fv[0] > 0 and fv[1] > 0 and price > 0:
+        midpoint = (fv[0] + fv[1]) / 2
+        mos_pct = (midpoint - price) / price * 100
+        if mos_pct >= 0:
+            report_card.valuation.margin_of_safety = f"+{mos_pct:.1f}% (discount)"
+        else:
+            report_card.valuation.margin_of_safety = f"{mos_pct:.1f}% (overvalued)"
+
+    # 2. Fix action_plan zone ordering: stop_loss < buy_zone[0] <= buy_zone[1] < add_zone < trim_zone
+    ap = report_card.action_plan
+    if len(ap.buy_zone) == 2 and ap.buy_zone[0] > ap.buy_zone[1]:
+        ap.buy_zone = [ap.buy_zone[1], ap.buy_zone[0]]
+    if len(ap.buy_zone) == 2:
+        if ap.stop_loss >= ap.buy_zone[0] and ap.buy_zone[0] > 0:
+            ap.stop_loss = round(ap.buy_zone[0] * 0.90, 1)  # 10% below low buy
+        if ap.add_zone <= ap.buy_zone[1] and ap.buy_zone[1] > 0:
+            ap.add_zone = round(ap.buy_zone[1] * 1.05, 1)  # 5% above high buy
+        if ap.trim_zone <= ap.add_zone and ap.add_zone > 0:
+            ap.trim_zone = round(ap.add_zone * 1.15, 1)  # 15% above add
+
+    return report_card
 
 
 def _build_company_artifact(
@@ -404,6 +627,7 @@ async def generate_company_artifact(
     client: AsyncAnthropic | Any,
     config: Settings,
     _retries_remaining: int | None = None,
+    _retry_context: str | None = None,
 ) -> CompanyAnalysisArtifact:
     started = time.perf_counter()
     logger.info("[%s] starting analysis", holding.tradingsymbol)
@@ -442,8 +666,13 @@ async def generate_company_artifact(
         f"Run exactly {config.analyst_max_searches} tavily_search calls in this order:\n"
         f"  1. '{holding.tradingsymbol} {fiscal['latest_quarter']} quarterly results earnings revenue profit'\n"
         f"  2. '{holding.tradingsymbol} ROCE ROE debt equity PE ratio screener.in {fiscal['current_fy']}'\n"
-        f"  3. '{holding.tradingsymbol} risks competitor outlook analyst target {fiscal['current_fy']}'\n\n"
+        f"  3. '{holding.tradingsymbol} risks competitor outlook management commentary {fiscal['current_fy']}'\n"
+        f"  4. '{holding.tradingsymbol} analyst target price consensus buy sell hold rating {fiscal['current_fy']}'\n\n"
         "Capture the exact URL from every search result you use — add them all to data_sources.\n"
+        "Fill all 12 source_map keys: revenue_cagr, eps_cagr, roce, roe, pe, peg, fcf_yield, debt_to_equity, fair_value, risk_1, analyst_target, market_share.\n"
+        "source_map values MUST be URLs (https://...) or 'Not available'. NEVER put data values in source_map.\n"
+        "NEVER cite a 5-year or 3-year historical CAGR. Use only the latest 1-2 quarters YoY trend.\n"
+        "eps_cagr MUST be per-share EPS, NOT absolute net profit in crores.\n"
         "Return exactly one valid JSON object. No markdown fences. No text outside the JSON.\n\n"
         "Input JSON:\n"
         + json.dumps(
@@ -467,8 +696,11 @@ async def generate_company_artifact(
         )
     )
 
+    if _retry_context:
+        user_prompt = _retry_context + "\n\n" + user_prompt
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
     searches_used = 0
+    all_collected_urls: list[str] = []
 
     for iteration in range(1, MAX_ANALYST_ITERATIONS + 1):
         await _log_input_tokens(
@@ -506,12 +738,13 @@ async def generate_company_artifact(
 
         if stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": _serialize_content_blocks(response.content)})
-            tool_results, search_increment = _materialize_tool_results(
+            tool_results, search_increment, new_urls = _materialize_tool_results(
                 response,
                 config=config,
                 search_budget_remaining=max(config.analyst_max_searches - searches_used, 0),
             )
             searches_used += search_increment
+            all_collected_urls.extend(new_urls)
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
             continue
@@ -523,6 +756,8 @@ async def generate_company_artifact(
                 holding=holding,
                 raw_text=_extract_text(response),
             )
+            report_card = _fix_internal_consistency(report_card)
+            report_card = _sync_source_map_to_data_sources(report_card)
             _log_response_usage(
                 label=f"[{holding.tradingsymbol}] analyst_structured",
                 model=config.analyst_model,
@@ -642,6 +877,20 @@ async def generate_company_artifact(
                     retries,
                     "; ".join(issues[:5]) if issues else "none captured",
                 )
+                # Build retry context with judge feedback and available URLs
+                retry_parts = [
+                    f"RETRY — Your previous analysis scored {combined_overall:.0f}/100. Fix these issues:",
+                ]
+                for issue in issues[:5]:
+                    retry_parts.append(f"- {issue}")
+                if all_collected_urls:
+                    unique_urls = list(dict.fromkeys(all_collected_urls))  # dedupe, preserve order
+                    retry_parts.append("")
+                    retry_parts.append("Source URLs available from your searches (USE THESE in source_map and data_sources):")
+                    for url in unique_urls:
+                        retry_parts.append(f"- {url}")
+                retry_ctx = "\n".join(retry_parts)
+
                 # Delete the saved artifact and re-run from scratch
                 output_path.unlink(missing_ok=True)
                 return await generate_company_artifact(
@@ -651,6 +900,7 @@ async def generate_company_artifact(
                     client=client,
                     config=config,
                     _retries_remaining=retries - 1,
+                    _retry_context=retry_ctx,
                 )
 
             if not passed:

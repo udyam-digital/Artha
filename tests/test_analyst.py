@@ -189,6 +189,11 @@ def make_report_card_payload(ticker: str, name: str = "KPIT Technologies", final
             f"https://www.screener.in/company/{ticker}/",
             f"https://www.example.com/{ticker.lower()}-results",
         ],
+        "source_map": {
+            "revenue_cagr": f"https://www.screener.in/company/{ticker}/",
+            "roce": f"https://www.screener.in/company/{ticker}/",
+            "pe": f"https://www.example.com/{ticker.lower()}-results",
+        },
     }
 
 

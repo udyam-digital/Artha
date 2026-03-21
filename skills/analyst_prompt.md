@@ -23,18 +23,63 @@ Search 2 — Quality & valuation:
   `TICKER ROCE ROE debt equity PE ratio fair value screener.in ${current_fy}`
 
 Search 3 — Risks & outlook:
-  `TICKER risks competitor outlook management commentary analyst target ${current_fy}`
+  `TICKER risks competitor outlook management commentary ${current_fy}`
+
+Search 4 — Analyst consensus:
+  `TICKER analyst target price consensus buy sell hold rating ${current_fy}`
 
 Replace TICKER with the actual stock symbol from the input.
 
 ---
 
-## SOURCE CAPTURE RULES (CRITICAL — enforced by QA)
+## SOURCE CAPTURE RULES (CRITICAL — enforced by automated QA judge)
 
-- Every numeric fact (revenue, ROCE, PE, margins) MUST come from a search result.
-- `data_sources` MUST contain the exact URL from each result you relied on.
-- Minimum 3 URLs. No placeholders (example.com, N/A, TBD, unknown).
-- If a URL was returned in search results, include it verbatim.
+Every numeric fact MUST be traceable to a specific search result URL.
+
+### Which search populates which fields:
+
+**Search 1 (Recent results)** feeds:
+  → `growth_engine.revenue_cagr`, `growth_engine.eps_cagr`, `growth_engine.growth_score`
+  → `stock_snapshot.current_price`
+
+**Search 2 (Quality & valuation)** feeds:
+  → `quality.roce`, `quality.roe`, `quality.debt_to_equity`, `quality.fcf_status`
+  → `valuation.pe`, `valuation.sector_pe`, `valuation.peg`, `valuation.fcf_yield`
+  → `valuation.fair_value_range`
+
+**Search 3 (Risks & outlook)** feeds:
+  → `risk_matrix.*` (all risk entries)
+  → `timing.fii_trend`
+
+**Search 4 (Analyst consensus)** feeds:
+  → `valuation.fair_value_range` (cross-check with search 2)
+  → `timing.momentum`, `timing.fii_trend`
+  → `final_verdict.confidence` (number of credible sources determines confidence)
+
+### URL rules:
+- `data_sources` MUST contain the exact URL from each search result you relied on. Minimum 3 URLs.
+- No placeholders (example.com, N/A, TBD, unknown). Copy URLs verbatim from search results.
+- If you cannot find a number in any search result, write "Not available" — do NOT fabricate a value.
+
+### source_map (REQUIRED — scored by automated judge):
+- `source_map` maps each metric KEY to the SOURCE URL where you found its value.
+- Values in source_map MUST be URLs (starting with https://) or "Not available". NEVER put data values in source_map.
+- Required keys (exactly these 12, use lowercase): `revenue_cagr`, `eps_cagr`, `roce`, `roe`, `pe`, `peg`, `fcf_yield`, `debt_to_equity`, `fair_value`, `risk_1`, `analyst_target`, `market_share`
+- Do NOT use any other key names. Do NOT add extra keys. Use EXACTLY these 12 keys.
+- If a metric is "Not available", still include the key with value "Not available".
+- Each URL in source_map must also appear in `data_sources`.
+- CORRECT example: `{"revenue_cagr": "https://screener.in/company/INFY/", "roce": "https://stockanalysis.com/quote/nse/INFY/ratios/", "pe": "https://trendlyne.com/equity/INFY/", "market_share": "Not available"}`
+- WRONG example: `{"revenue_cagr": "₹319 cr, +20% YoY", "ROCE": "44.9%"}` — these are DATA VALUES, not URLs, and keys are non-standard
+
+### No unsourced specifics (CRITICAL — enforced by automated judge):
+- If you cite an analyst price target, you MUST add the URL to source_map under `analyst_target`.
+- If you cite a market share figure, you MUST add the URL to source_map under `market_share`.
+- If you cite a precise margin figure (EBITDA %, PAT %), the source URL must be in source_map.
+- If you claim "market leader", "monopolistic position", or similar competitive claims, you MUST cite the source URL.
+- If you cite management commentary (e.g. "avoided guidance"), the source URL must be in data_sources.
+- If you claim FII/DII buying or selling trends, the URL must be in source_map under the relevant key.
+- If NO search result contains the data, do NOT include the claim. Write "Not available" instead.
+- NEVER extrapolate or infer data that is not explicitly stated in search results.
 
 ---
 
@@ -42,9 +87,16 @@ Replace TICKER with the actual stock symbol from the input.
 
 `growth_engine.revenue_cagr` and `growth_engine.eps_cagr`:
 - MUST reference ${latest_quarter} or the last 2–3 quarters YoY trend.
-- NEVER quote a 3-year historical CAGR or reference FY years in isolation.
+- NEVER quote a 3-year or 5-year historical CAGR. NEVER reference FY years in isolation.
 - Good: "Revenue +12% YoY in ${latest_quarter} (vs +28% in ${prev_quarter})"
 - Bad:  "32% 3-year CAGR (FY25 vs FY22)"
+- Bad:  "67.8% 5-year CAGR"
+
+`growth_engine.eps_cagr` — MUST be per-share EPS, NOT absolute net profit:
+- Good: "EPS ₹12.50 in ${latest_quarter} vs ₹10.20 YoY (+22.5%)"
+- Bad:  "Net profit ₹134 cr in ${latest_quarter}" — this is net income, NOT EPS
+- If you cannot find per-share EPS, calculate: Net Profit / Total Shares Outstanding
+- If shares outstanding are unknown, write "EPS data: Net profit ₹X cr (+Y% YoY); per-share EPS not available"
 
 `growth_engine.growth_score` (1–10, current momentum ONLY):
 - Both of last 2 quarters show YoY profit DECLINE → cap at 4
@@ -69,16 +121,44 @@ Minimum required: 2 company_risks + 1 structural_risk + 1 cyclical_risk (4 total
 
 - `pe`: Use TTM (trailing twelve months) earnings. Not peak-year.
 - `fair_value_range`: Must be consistent with your `sector_pe` and `growth_score`.
-- `margin_of_safety`: Positive if current price < fair_value_range lower bound; negative if above.
+- `margin_of_safety`: Calculate as: `(fair_value_midpoint - current_price) / current_price × 100`
+  - Positive % = stock trades at a discount (e.g. "+15% margin of safety")
+  - Negative % = stock trades at a premium (e.g. "-12% overvalued")
+  - Example: fair_value midpoint 500, current_price 450 → +11.1%
+  - Example: fair_value midpoint 500, current_price 600 → -16.7%
+  - VERIFY: If margin_of_safety is NEGATIVE, fair_value_midpoint < current_price. If POSITIVE, fair_value_midpoint > current_price.
 - `rvs_score`: Risk-Valuation-Sentiment composite, 1–10.
+
+---
+
+## ACTION PLAN CONSISTENCY RULES (CRITICAL)
+
+Zone prices MUST follow this ordering for the action_plan to make sense:
+  stop_loss < buy_zone[0] ≤ buy_zone[1] < add_zone < trim_zone
+
+- `buy_zone`: The price range where you would start a new position. Must be BELOW add_zone.
+- `add_zone`: The price at which you would add to an existing position. Must be ABOVE buy_zone[1].
+- `trim_zone`: The price at which you would take profit. Must be ABOVE add_zone.
+- `stop_loss`: Must be BELOW buy_zone[0].
+- `hold_zone`: The range between add_zone and trim_zone.
+
+For a HOLD verdict with NEGATIVE margin_of_safety (stock overvalued vs fair value):
+- buy_zone should be well below current_price (discount entry)
+- Do NOT set add_zone above current_price unless you genuinely believe the stock is undervalued
 
 ---
 
 ## VERDICT CONSISTENCY RULES
 
-- BUY/ADD + timing_signal=Risky + risk_level=High → contradiction, downgrade verdict.
-- EXIT + timing_signal=Favorable + risk_level=Low → contradiction, reconsider.
-- `confidence` must reflect data quality: LOW if fewer than 2 search results returned data.
+Before writing final_verdict, answer this checklist mentally:
+1. Is timing_signal = Risky AND risk_level = High? → verdict CANNOT be BUY or ADD. Use HOLD or TRIM.
+2. Is timing_signal = Favorable AND risk_level = Low? → verdict CANNOT be EXIT. Reconsider.
+3. Does the verdict contradict margin_of_safety? (e.g. ADD when MoS is negative = suspicious)
+
+### Confidence rules (tied to source_map):
+- HIGH confidence: requires 8+ populated source_map entries (not "Not available") AND 4+ real URLs in data_sources.
+- MEDIUM confidence: requires 5+ populated source_map entries AND 3+ real URLs.
+- LOW confidence: anything below MEDIUM thresholds. If fewer than 2 search results returned useful data → must be LOW.
 
 ---
 
@@ -179,5 +259,20 @@ Return exactly this structure. All fields required. No null values — use 0.0 f
     "https://exact-url-from-search-result-1",
     "https://exact-url-from-search-result-2",
     "https://exact-url-from-search-result-3"
-  ]
+  ],
+
+  "source_map": {
+    "revenue_cagr": "https://url-from-search-result",
+    "eps_cagr": "https://url-from-search-result",
+    "roce": "https://url-from-search-result",
+    "roe": "https://url-from-search-result",
+    "pe": "https://url-from-search-result",
+    "peg": "https://url-from-search-result",
+    "fcf_yield": "https://url-from-search-result",
+    "debt_to_equity": "https://url-from-search-result",
+    "fair_value": "https://url-from-search-result",
+    "risk_1": "https://url-from-search-result",
+    "analyst_target": "https://url-from-search-result or Not available",
+    "market_share": "https://url-from-search-result or Not available"
+  }
 }

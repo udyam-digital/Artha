@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     model: str = Field(default="claude-sonnet-4-6", alias="MODEL")
     analyst_model: str = Field(default="claude-haiku-4-5", alias="ANALYST_MODEL")
     analyst_max_tokens: int = Field(default=4096, alias="ANALYST_MAX_TOKENS")
-    analyst_max_searches: int = Field(default=3, alias="ANALYST_MAX_SEARCHES")
+    analyst_max_searches: int = Field(default=4, alias="ANALYST_MAX_SEARCHES")
     analyst_parallelism: int = Field(default=2, alias="ANALYST_PARALLELISM")
     analyst_min_start_interval_seconds: float = Field(default=3.0, alias="ANALYST_MIN_START_INTERVAL_SECONDS")
     haiku_input_tpm: int = Field(default=50000, alias="HAIKU_INPUT_TPM")
