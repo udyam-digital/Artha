@@ -9,8 +9,10 @@ from typing import Any
 import instructor
 from anthropic import AsyncAnthropic
 
+from analysis.judge import judge_report_card
 from config import Settings
 from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
+from observability.langfuse_client import score_analyst_trace
 from observability.usage import count_input_tokens_exact, log_estimated_input_tokens, record_anthropic_usage
 from persistence.store import save_company_analysis_artifact
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
@@ -501,6 +503,45 @@ async def generate_company_artifact(
                 output_path,
                 time.perf_counter() - started,
             )
+
+            judge_result = await judge_report_card(
+                report_card_json=artifact.report_card.model_dump_json(),
+                ticker=holding.tradingsymbol,
+                config=config,
+                client=raw_client,
+            )
+            if judge_result:
+                logger.info(
+                    "[%s] judge overall=%d — %s",
+                    holding.tradingsymbol,
+                    judge_result.get("overall", 0),
+                    judge_result.get("one_line_summary", ""),
+                )
+                score_analyst_trace(
+                    settings=config,
+                    ticker=holding.tradingsymbol,
+                    trace_id=None,
+                    eval_result={
+                        "overall": judge_result.get("overall", 0),
+                        "growth": {
+                            "score": judge_result.get("recency", 0),
+                            "failures": judge_result.get("key_issues", []),
+                        },
+                        "risk": {
+                            "score": judge_result.get("risk_completeness", 0),
+                            "failures": [],
+                        },
+                        "sources": {
+                            "score": judge_result.get("valuation_accuracy", 0),
+                            "failures": [],
+                        },
+                        "verdict_consistency": {
+                            "score": judge_result.get("verdict_logic", 0),
+                            "failures": [],
+                        },
+                    },
+                )
+
             return artifact
 
         raise ValueError(f"Unexpected stop_reason: {stop_reason}")
