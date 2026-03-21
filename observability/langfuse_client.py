@@ -24,11 +24,13 @@ def _build_langfuse(
     try:
         from langfuse import Langfuse
 
-        return Langfuse(
+        lf = Langfuse(
             public_key=public_key,
             secret_key=secret_key,
             host=host,
         )
+        logger.info("Langfuse initialised (host=%s)", host)
+        return lf
     except ImportError:
         logger.warning("langfuse not installed; tracing disabled")
         return None
@@ -42,40 +44,53 @@ def get_langfuse(settings: Settings) -> "Langfuse | None":
     )
 
 
-def score_analyst_trace(
-    *,
-    settings: Settings,
+def init_langfuse(settings: Settings) -> None:
+    """
+    Eagerly initialise Langfuse so the OpenTelemetry provider is active
+    before any @observe-decorated functions run. Safe to call multiple times.
+    """
+    get_langfuse(settings)
+
+
+def score_active_trace(
+    lf: "Langfuse",
+    judge_result: dict[str, Any],
     ticker: str,
-    trace_id: str | None,
-    eval_result: dict[str, Any],
+    factual_result: dict[str, Any] | None = None,
 ) -> None:
     """
-    Post LLM-as-Judge scores to Langfuse as scores on the analyst trace.
-    Silently no-ops if Langfuse is not configured or not installed.
+    Post all judge dimension scores to the *currently active* Langfuse trace.
+    Must be called from inside an @observe-decorated function.
     """
-    lf = get_langfuse(settings)
-    if lf is None:
-        return
     try:
-        overall = eval_result.get("overall", 0)
-        comment_parts: list[str] = []
-        for key in ("growth", "risk", "sources", "verdict_consistency"):
-            section = eval_result.get(key, {})
-            score = section.get("score", 0)
-            failures = section.get("failures", [])
-            comment_parts.append(f"{key}={score}")
-            if failures:
-                comment_parts.append(f"  issues: {'; '.join(failures)}")
-        comment = "\n".join(comment_parts)
-
-        score_kwargs: dict[str, Any] = {
-            "name": "llm-judge-overall",
-            "value": overall,
-            "comment": comment,
+        # Quality judge dimensions
+        dimensions: dict[str, float] = {
+            "judge-recency": judge_result.get("recency", 0),
+            "judge-risk": judge_result.get("risk_completeness", 0),
+            "judge-valuation": judge_result.get("valuation_accuracy", 0),
+            "judge-verdict-logic": judge_result.get("verdict_logic", 0),
         }
-        if trace_id:
-            score_kwargs["trace_id"] = trace_id
+        # Factual judge dimensions
+        if factual_result:
+            dimensions["judge-source-grounding"] = factual_result.get("source_grounding", 0)
+            dimensions["judge-hallucination-risk"] = factual_result.get("hallucination_risk", 0)
+            dimensions["judge-data-consistency"] = factual_result.get("data_consistency", 0)
 
-        lf.score(**score_kwargs)
+        for name, raw_score in dimensions.items():
+            lf.score_current_trace(
+                name=name,
+                value=round(raw_score / 100, 4),  # normalise 0-100 → 0.0-1.0
+            )
+        lf.score_current_trace(
+            name="judge-overall",
+            value=round(judge_result.get("overall", 0) / 100, 4),
+            comment=judge_result.get("one_line_summary", ""),
+        )
+        if factual_result:
+            lf.score_current_trace(
+                name="judge-factual-overall",
+                value=round(factual_result.get("overall", 0) / 100, 4),
+                comment=factual_result.get("one_line_summary", ""),
+            )
     except Exception as exc:
-        logger.warning("[%s] Langfuse score post failed (non-fatal): %s", ticker, exc)
+        logger.warning("[%s] Langfuse in-context scoring failed (non-fatal): %s", ticker, exc)

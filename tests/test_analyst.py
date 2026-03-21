@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -12,6 +13,36 @@ from models import AnalystReportCard, Holding
 
 
 pytestmark = pytest.mark.anyio
+
+
+PASSING_QUALITY_SCORES = {
+    "recency": 70,
+    "risk_completeness": 65,
+    "valuation_accuracy": 60,
+    "verdict_logic": 70,
+    "overall": 67,
+    "key_issues": [],
+    "one_line_summary": "Good quality report",
+}
+
+PASSING_FACTUAL_SCORES = {
+    "source_grounding": 70,
+    "hallucination_risk": 80,
+    "data_consistency": 65,
+    "overall": 72,
+    "red_flags": [],
+    "one_line_summary": "Well-grounded report",
+}
+
+
+@pytest.fixture(autouse=True)
+def _mock_judges():
+    """Mock both judge functions so tests don't need extra LLM responses."""
+    with (
+        patch("analysis.analyst.judge_report_card", new_callable=AsyncMock, return_value=PASSING_QUALITY_SCORES),
+        patch("analysis.analyst.judge_factual_grounding", new_callable=AsyncMock, return_value=PASSING_FACTUAL_SCORES),
+    ):
+        yield
 
 
 class FakeAnthropicClient:
@@ -241,9 +272,12 @@ async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> 
     assert "price_1y_ago" not in prompt
     assert "price_change_1y_pct" not in prompt
     assert "candles" not in prompt
-    assert "latest quarterly results FY25" not in prompt
-    assert "management commentary 2025" not in prompt
-    assert "latest quarterly results" in prompt
+    # Old stale query phrases must be gone
+    assert "FY25" not in prompt
+    assert "2025" not in prompt
+    # New prompt must reference the current fiscal period and research tasks
+    assert "quarterly results" in prompt
+    assert "data_sources" in prompt
 
 
 async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
@@ -378,3 +412,99 @@ async def test_analyse_stock_enforces_tavily_search_budget(tmp_path: Path) -> No
     assert tool_results[-1]["is_error"] is True
     assert "budget exhausted" in tool_results[-1]["content"]
     monkeypatch.undo()
+
+
+async def test_analyse_stock_retries_on_low_judge_score(tmp_path: Path) -> None:
+    """When combined judge score is below threshold, analyst retries and produces a new artifact."""
+    low_quality = {**PASSING_QUALITY_SCORES, "overall": 20, "key_issues": ["Stale data"]}
+    low_factual = {**PASSING_FACTUAL_SCORES, "overall": 15, "red_flags": ["No real sources"]}
+    call_count = 0
+
+    async def _mock_quality_judge(*args, **kwargs):
+        nonlocal call_count
+        # First call returns low score, second call returns passing score
+        if call_count == 0:
+            return low_quality
+        return PASSING_QUALITY_SCORES
+
+    async def _mock_factual_judge(*args, **kwargs):
+        nonlocal call_count
+        if call_count == 0:
+            return low_factual
+        return PASSING_FACTUAL_SCORES
+
+    # We need 2 end_turn responses (first attempt + retry) and 2 instructor responses
+    client = FakeAnthropicClient([
+        make_final_response("KPITTECH"),  # first analyst run
+        make_final_response("KPITTECH"),  # first instructor coerce
+        make_final_response("KPITTECH"),  # retry analyst run
+        make_final_response("KPITTECH"),  # retry instructor coerce
+    ])
+
+    settings = make_settings(tmp_path)
+    settings = Settings(
+        ANTHROPIC_API_KEY="test-key",
+        REPORTS_DIR=str(tmp_path / "reports"),
+        KITE_DATA_DIR=str(tmp_path / "kite"),
+        MODEL="claude-sonnet-4-6",
+        ANALYST_MODEL="claude-haiku-4-5",
+        JUDGE_RETRY_THRESHOLD=45,
+        JUDGE_MAX_RETRIES=1,
+    )
+
+    # Track when the quality judge is called to flip scores on retry
+    original_count = 0
+
+    async def _quality_side_effect(*args, **kwargs):
+        nonlocal original_count
+        original_count += 1
+        if original_count == 1:
+            return low_quality
+        return PASSING_QUALITY_SCORES
+
+    async def _factual_side_effect(*args, **kwargs):
+        if original_count <= 1:
+            return low_factual
+        return PASSING_FACTUAL_SCORES
+
+    with (
+        patch("analysis.analyst.judge_report_card", side_effect=_quality_side_effect),
+        patch("analysis.analyst.judge_factual_grounding", side_effect=_factual_side_effect),
+    ):
+        verdict = await analyse_stock(
+            holding=make_holding(),
+            portfolio_total_value=10_000.0,
+            price_context={},
+            skills_content="system",
+            client=client,  # type: ignore[arg-type]
+            config=settings,
+        )
+
+    assert verdict.verdict == "BUY"
+    assert verdict.error is None
+    # Should have called the analyst LLM twice (original + retry), plus instructor twice
+    assert len(client.calls) == 4
+    # Judge scores file should exist
+    assert (tmp_path / "kite" / "companies" / "KPITTECH_judge.json").exists()
+
+
+async def test_analyse_stock_persists_judge_scores(tmp_path: Path) -> None:
+    """Judge scores are persisted to {TICKER}_judge.json."""
+    client = FakeAnthropicClient([make_final_response("KPITTECH")])
+    await analyse_stock(
+        holding=make_holding(),
+        portfolio_total_value=10_000.0,
+        price_context={},
+        skills_content="system",
+        client=client,  # type: ignore[arg-type]
+        config=make_settings(tmp_path),
+    )
+    judge_path = tmp_path / "kite" / "companies" / "KPITTECH_judge.json"
+    assert judge_path.exists()
+    import json
+    scores = json.loads(judge_path.read_text())
+    assert scores["ticker"] == "KPITTECH"
+    assert scores["quality_scores"] is not None
+    assert scores["factual_scores"] is not None
+    assert scores["combined_overall"] > 0
+    assert scores["passed"] is True

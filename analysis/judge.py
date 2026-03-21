@@ -6,13 +6,22 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from analysis.fiscal import get_fiscal_context
 from config import Settings
 
 
 logger = logging.getLogger(__name__)
 
-_RUBRIC = """
+
+def _build_rubric() -> str:
+    ctx = get_fiscal_context()
+    latest_q = ctx["latest_quarter"]   # e.g. "Q3 FY26"
+    prev_q = ctx["prev_quarter"]       # e.g. "Q2 FY26"
+    current_fy = ctx["current_fy"]     # e.g. "FY26"
+    return f"""
 You are a senior equity research QA evaluator for Indian stocks.
+
+Today: {ctx['today_date']}. Latest published quarter: {latest_q}.
 
 Score the following analyst report card JSON on four dimensions.
 Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
@@ -20,35 +29,39 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
 SCORING RUBRIC:
 
 recency (0-100):
-  - Does revenue_cagr or eps_cagr reference Q3 FY26 or recent quarters? → high score
-  - Does it reference FY25, FY24, "3-year historical", or "past"? → max 40
-  - Is growth_score consistent with recent quarterly profit trend shown in risks? → required
+  - Does revenue_cagr or eps_cagr reference {latest_q} or {prev_q} YoY trend? → high score
+  - Does it reference only annual FY figures, "3-year historical CAGR", or stale periods? → max 40
+  - Is growth_score consistent with the recent quarterly profit trend shown in company_risks? → required
 
 risk_completeness (0-100):
-  - Are there 5+ specific, quantified risks across structural/cyclical/company categories? → high score
-  - Are risks generic (1-2 words, e.g. "market risk", "competition")? → deduct 20 each
-  - Does it mention sector-specific threats where relevant (e.g. NSDL IPO for CDSL)? → required
+  - Are there 4+ risks total (2+ company, 1+ structural, 1+ cyclical)? → required for >60
+  - Are risks full sentences with specific mechanisms? → high score
+  - Generic 1-2 word labels (e.g. "competition", "market risk") → deduct 20 each
+  - Does it mention sector-specific competitive or regulatory threats? → required for >80
 
 valuation_accuracy (0-100):
-  - Is PE or fair_value_range based on TTM/recent earnings, not peak-year? → required
-  - Is fair_value_range internally consistent with stated sector_pe and growth_score? → check
-  - Is margin_of_safety realistic given current price vs fair value range? → check
+  - Is PE or fair_value_range based on TTM/{current_fy} earnings, not peak-year? → required
+  - Is fair_value_range consistent with sector_pe × growth_score logic? → check
+  - Is margin_of_safety realistic vs current price vs fair value range? → check
 
 verdict_logic (0-100):
-  - Does final verdict align with timing_signal and risk_level?
-  - BUY + Risky timing + High risk = contradiction → max 40
-  - Is confidence level (HIGH/MEDIUM/LOW) justified by data quality and recency?
+  - Does the final verdict align with timing_signal and risk_level?
+  - BUY/ADD + Risky timing + High risk = contradiction → max 40
+  - Is confidence (HIGH/MEDIUM/LOW) justified by data quality and number of sources?
+  - Fewer than 2 real URLs in data_sources → LOW confidence is required
 
 Return this exact JSON:
-{
-  "recency": <0-100>,
-  "risk_completeness": <0-100>,
-  "valuation_accuracy": <0-100>,
-  "verdict_logic": <0-100>,
-  "overall": <weighted: recency*0.35 + risk_completeness*0.25 + valuation_accuracy*0.20 + verdict_logic*0.20>,
+{{
+  "recency": 0,
+  "risk_completeness": 0,
+  "valuation_accuracy": 0,
+  "verdict_logic": 0,
+  "overall": 0,
   "key_issues": ["issue 1", "issue 2"],
   "one_line_summary": "plain English verdict on quality"
-}
+}}
+
+Where overall = recency*0.35 + risk_completeness*0.25 + valuation_accuracy*0.20 + verdict_logic*0.20
 """
 
 
@@ -59,19 +72,19 @@ async def judge_report_card(
     client: AsyncAnthropic | Any,
 ) -> dict[str, Any] | None:
     """
-    Asks Sonnet to grade a Haiku-produced analyst report card.
+    Asks Haiku to grade an analyst report card.
     Returns score dict or None on failure. Never raises.
-    Cost: ~1K tokens ≈ $0.003 per call.
     """
     raw_client: AsyncAnthropic = getattr(client, "client", client)
+    rubric = _build_rubric()
     try:
         response = await raw_client.messages.create(
-            model=config.model,
-            max_tokens=512,
+            model=config.analyst_model,
+            max_tokens=768,
             messages=[
                 {
                     "role": "user",
-                    "content": f"{_RUBRIC}\n\nREPORT CARD:\n{report_card_json}",
+                    "content": f"{rubric}\n\nREPORT CARD:\n{report_card_json}",
                 }
             ],
         )
@@ -87,4 +100,85 @@ async def judge_report_card(
         return result
     except Exception as exc:
         logger.warning("[%s] LLM judge failed (non-fatal): %s", ticker, exc)
+        return None
+
+
+def _build_factual_rubric() -> str:
+    ctx = get_fiscal_context()
+    return f"""
+You are a senior equity research fact-checker for Indian stocks.
+
+Today: {ctx['today_date']}. Latest published quarter: {ctx['latest_quarter']}.
+
+Evaluate the analyst report card JSON for factual grounding, hallucination risk,
+and internal data consistency. Return ONLY valid JSON — no markdown fences, no explanation.
+
+SCORING RUBRIC:
+
+source_grounding (0-100):
+  - Are key claims (revenue, EPS, ROCE, PE) backed by specific URLs in data_sources? → required for >60
+  - Are there 2+ real URLs? → required for >50
+  - Do URLs look like real financial sites (screener.in, moneycontrol.com, trendlyne.com, tickertape.in, etc.)? → high score
+  - Generic or placeholder URLs → max 20
+
+hallucination_risk (0-100, inverted — high = good, low = bad):
+  - Are numerical claims (growth rates, PE ratios, fair values) plausible given the sector? → high score
+  - Are there fabricated-looking specifics (exact quarterly numbers) with no matching data_source? → deduct 30
+  - Does revenue_cagr / eps_cagr look realistic for the sector and market cap? → check
+  - Outlandish fair_value_range vs current_price → deduct 20
+
+data_consistency (0-100):
+  - Do growth_score, quality_score, rvs_score internally align with raw metrics (ROCE, PE, etc.)?
+  - Does fair_value_range make sense vs current_price and PE? → check
+  - Is margin_of_safety consistent with fair_value_range vs current_price? → check
+  - Does risk_level align with the risks listed? → check
+
+Return this exact JSON:
+{{
+  "source_grounding": 0,
+  "hallucination_risk": 0,
+  "data_consistency": 0,
+  "overall": 0,
+  "red_flags": ["flag 1"],
+  "one_line_summary": "plain English verdict on factual quality"
+}}
+
+Where overall = source_grounding*0.40 + hallucination_risk*0.35 + data_consistency*0.25
+"""
+
+
+async def judge_factual_grounding(
+    report_card_json: str,
+    ticker: str,
+    config: Settings,
+    client: AsyncAnthropic | Any,
+) -> dict[str, Any] | None:
+    """
+    Asks Haiku to evaluate factual grounding, hallucination risk, and data consistency.
+    Returns score dict or None on failure. Never raises.
+    """
+    raw_client: AsyncAnthropic = getattr(client, "client", client)
+    rubric = _build_factual_rubric()
+    try:
+        response = await raw_client.messages.create(
+            model=config.analyst_model,
+            max_tokens=768,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{rubric}\n\nREPORT CARD:\n{report_card_json}",
+                }
+            ],
+        )
+        text: str = response.content[0].text.strip()
+        if text.startswith("```"):
+            parts = text.split("```")
+            text = parts[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        result: dict[str, Any] = json.loads(text)
+        return result
+    except Exception as exc:
+        logger.warning("[%s] factual judge failed (non-fatal): %s", ticker, exc)
         return None

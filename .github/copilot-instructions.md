@@ -17,3 +17,9 @@ Review focus:
 - Missing tests for deterministic logic changes.
 - Unsafe assumptions around malformed provider responses, auth/session boundaries, or stale cached artifacts.
 - Any change that weakens conservative error handling or auditability.
+
+Skill usage:
+
+- Use `.github/skills/agent-governance/` whenever touching the agent tool loop, adding new MCP tool wrappers, or reviewing trust boundaries, rate limits, and audit trails. This skill provides Python-ready governance patterns (GovernancePolicy, intent classification, @govern decorator, audit log) suited to Artha's tool-calling architecture.
+- Use `.github/skills/ai-prompt-engineering-safety-review/` before committing any change to system prompts, skill markdown files under `skills/`, or prompt construction code in `agent.py`. Run the full analysis framework against any new prompt text to catch injection risks, over-confidence, and unsafe generalizations before they reach production.
+- Use `.github/skills/architecture-blueprint-generator/` when producing or refreshing architectural documentation, Mermaid diagrams, or `docs/timeline.md` entries. Auto-detect the Python + async + Anthropic + MCP stack and generate diagrams at the correct abstraction level for this repo.

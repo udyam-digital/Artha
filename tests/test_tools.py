@@ -150,14 +150,14 @@ def test_tavily_search_formats_summary_and_results(monkeypatch) -> None:
             self.api_key = api_key
 
         def search(self, **kwargs):
-            assert kwargs["search_depth"] == "basic"
+            assert kwargs["search_depth"] == "advanced"
             assert kwargs["max_results"] == 2
             return {
                 "answer": "Short answer",
                 "results": [
                     {
                         "title": "Result 1",
-                        "content": "A" * 450,
+                        "content": "A" * 900,
                         "url": "https://example.com/1",
                     },
                     {
@@ -173,7 +173,7 @@ def test_tavily_search_formats_summary_and_results(monkeypatch) -> None:
     monkeypatch.setitem(__import__("sys").modules, "tavily", fake_module)
     settings = Settings(ANTHROPIC_API_KEY="test-key", TAVILY_API_KEY="tvly-test")
     result = tavily_search("KPIT results", max_results=2, settings=settings)
-    assert "Summary: Short answer" in result
+    assert "SUMMARY: Short answer" in result
     assert "[Result 1]" in result
-    assert "https://example.com/1" in result
-    assert "..." in result
+    assert "URL: https://example.com/1" in result
+    assert "..." in result  # snippet was truncated at 800 chars

@@ -9,12 +9,13 @@ from typing import Any
 import instructor
 from anthropic import AsyncAnthropic
 
-from analysis.judge import judge_report_card
+from analysis.fiscal import get_fiscal_context
+from analysis.judge import judge_factual_grounding, judge_report_card
+from observability.langfuse_client import get_langfuse, score_active_trace
 from config import Settings
 from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
-from observability.langfuse_client import score_analyst_trace
 from observability.usage import count_input_tokens_exact, log_estimated_input_tokens, record_anthropic_usage
-from persistence.store import save_company_analysis_artifact
+from persistence.store import save_company_analysis_artifact, save_judge_scores
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
 
@@ -385,26 +386,65 @@ def _build_company_artifact(
     )
 
 
+try:
+    from langfuse import observe as _lf_observe
+
+    def _analyst_observe(fn: Any) -> Any:
+        return _lf_observe(fn, as_type="generation", capture_input=False, capture_output=False)
+except ImportError:
+    def _analyst_observe(fn: Any) -> Any:  # type: ignore[misc]
+        return fn
+
+
+@_analyst_observe
 async def generate_company_artifact(
     holding: Holding,
     price_context: dict[str, float | str],
     skills_content: str,
     client: AsyncAnthropic | Any,
     config: Settings,
+    _retries_remaining: int | None = None,
 ) -> CompanyAnalysisArtifact:
     started = time.perf_counter()
     logger.info("[%s] starting analysis", holding.tradingsymbol)
+
+    # Emit structured input to the active Langfuse generation span
+    lf = get_langfuse(config)
+    if lf:
+        try:
+            lf.update_current_generation(
+                name=f"analyst-{holding.tradingsymbol}",
+                model=config.analyst_model,
+                input={
+                    "tradingsymbol": holding.tradingsymbol,
+                    "exchange": holding.exchange,
+                    "last_price": holding.last_price,
+                    "pnl_pct": holding.pnl_pct,
+                    "current_weight_pct": holding.current_weight_pct,
+                    "target_weight_pct": holding.target_weight_pct,
+                    "52w_high": price_context.get("52w_high"),
+                    "52w_low": price_context.get("52w_low"),
+                    "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct"),
+                },
+                metadata={"ticker": holding.tradingsymbol},
+            )
+        except Exception:
+            pass  # non-fatal
     instructor_client = _ensure_instructor_client(client, api_key=config.anthropic_api_key)
     raw_client = _raw_client_for_counting(instructor_client)
     tools = [get_tavily_search_tool_definition(config)]
 
+    fiscal = get_fiscal_context()
     user_prompt = (
-        f"Analyse this Indian stock using tavily_search and return exactly one valid JSON object only.\n"
-        f"You may call tavily_search at most {config.analyst_max_searches} times. "
-        "Prefer these queries in order if needed: "
-        f"'{holding.tradingsymbol} latest quarterly results', "
-        f"'{holding.tradingsymbol} screener.in fundamentals ROCE debt', "
-        f"and '{holding.tradingsymbol} recent news management commentary'.\n"
+        f"Analyse this Indian stock. Today: {fiscal['today_date']}. "
+        f"Latest published quarter: {fiscal['latest_quarter']}. "
+        f"Current period: {fiscal['current_quarter']}.\n\n"
+        f"Run exactly {config.analyst_max_searches} tavily_search calls in this order:\n"
+        f"  1. '{holding.tradingsymbol} {fiscal['latest_quarter']} quarterly results earnings revenue profit'\n"
+        f"  2. '{holding.tradingsymbol} ROCE ROE debt equity PE ratio screener.in {fiscal['current_fy']}'\n"
+        f"  3. '{holding.tradingsymbol} risks competitor outlook analyst target {fiscal['current_fy']}'\n\n"
+        "Capture the exact URL from every search result you use — add them all to data_sources.\n"
+        "Return exactly one valid JSON object. No markdown fences. No text outside the JSON.\n\n"
         "Input JSON:\n"
         + json.dumps(
             {
@@ -504,42 +544,121 @@ async def generate_company_artifact(
                 time.perf_counter() - started,
             )
 
+            report_card_json = artifact.report_card.model_dump_json()
             judge_result = await judge_report_card(
-                report_card_json=artifact.report_card.model_dump_json(),
+                report_card_json=report_card_json,
+                ticker=holding.tradingsymbol,
+                config=config,
+                client=raw_client,
+            )
+            factual_result = await judge_factual_grounding(
+                report_card_json=report_card_json,
                 ticker=holding.tradingsymbol,
                 config=config,
                 client=raw_client,
             )
             if judge_result:
                 logger.info(
-                    "[%s] judge overall=%d — %s",
+                    "[%s] quality judge overall=%d — %s",
                     holding.tradingsymbol,
                     judge_result.get("overall", 0),
                     judge_result.get("one_line_summary", ""),
                 )
-                score_analyst_trace(
-                    settings=config,
-                    ticker=holding.tradingsymbol,
-                    trace_id=None,
-                    eval_result={
-                        "overall": judge_result.get("overall", 0),
-                        "growth": {
-                            "score": judge_result.get("recency", 0),
-                            "failures": judge_result.get("key_issues", []),
+            if factual_result:
+                logger.info(
+                    "[%s] factual judge overall=%d — %s",
+                    holding.tradingsymbol,
+                    factual_result.get("overall", 0),
+                    factual_result.get("one_line_summary", ""),
+                )
+
+            # Compute combined score (50/50 quality + factual)
+            quality_overall = judge_result.get("overall", 0) if judge_result else 0
+            factual_overall = factual_result.get("overall", 0) if factual_result else 0
+            if judge_result and factual_result:
+                combined_overall = quality_overall * 0.5 + factual_overall * 0.5
+            elif judge_result:
+                combined_overall = float(quality_overall)
+            elif factual_result:
+                combined_overall = float(factual_overall)
+            else:
+                combined_overall = 0.0
+
+            passed = combined_overall >= config.judge_retry_threshold
+
+            # Persist judge scores locally
+            save_judge_scores(
+                ticker=holding.tradingsymbol,
+                quality_scores=judge_result,
+                factual_scores=factual_result,
+                combined_overall=combined_overall,
+                passed=passed,
+                settings=config,
+            )
+
+            # Post judge scores on the active trace (inside @observe context)
+            if lf:
+                if judge_result:
+                    score_active_trace(lf, judge_result, holding.tradingsymbol, factual_result)
+
+            # Emit structured output to the active Langfuse generation span
+            if lf:
+                try:
+                    rc = artifact.report_card
+                    lf.update_current_generation(
+                        output={
+                            "verdict": rc.final_verdict.verdict,
+                            "confidence": rc.final_verdict.confidence,
+                            "growth_score": rc.growth_engine.growth_score,
+                            "risk_level": rc.risk_matrix.risk_level,
+                            "timing_signal": rc.timing.timing_signal,
+                            "data_sources": rc.data_sources,
+                            "judge_overall": judge_result.get("overall") if judge_result else None,
+                            "factual_overall": factual_result.get("overall") if factual_result else None,
+                            "combined_overall": combined_overall,
                         },
-                        "risk": {
-                            "score": judge_result.get("risk_completeness", 0),
-                            "failures": [],
+                        metadata={
+                            "ticker": holding.tradingsymbol,
+                            "verdict": rc.final_verdict.verdict,
+                            "iterations": iteration,
                         },
-                        "sources": {
-                            "score": judge_result.get("valuation_accuracy", 0),
-                            "failures": [],
-                        },
-                        "verdict_consistency": {
-                            "score": judge_result.get("verdict_logic", 0),
-                            "failures": [],
-                        },
-                    },
+                    )
+                except Exception:
+                    pass  # non-fatal
+
+            # Retry if combined score is below threshold
+            retries = _retries_remaining if _retries_remaining is not None else config.judge_max_retries
+            if not passed and retries > 0:
+                issues = []
+                if judge_result:
+                    issues.extend(judge_result.get("key_issues", []))
+                if factual_result:
+                    issues.extend(factual_result.get("red_flags", []))
+                logger.warning(
+                    "[%s] combined judge score %.1f < %d, retrying (%d left). Issues: %s",
+                    holding.tradingsymbol,
+                    combined_overall,
+                    config.judge_retry_threshold,
+                    retries,
+                    "; ".join(issues[:5]) if issues else "none captured",
+                )
+                # Delete the saved artifact and re-run from scratch
+                output_path.unlink(missing_ok=True)
+                return await generate_company_artifact(
+                    holding=holding,
+                    price_context=price_context,
+                    skills_content=skills_content,
+                    client=client,
+                    config=config,
+                    _retries_remaining=retries - 1,
+                )
+
+            if not passed:
+                logger.warning(
+                    "[%s] combined judge score %.1f < %d after all retries; proceeding anyway",
+                    holding.tradingsymbol,
+                    combined_overall,
+                    config.judge_retry_threshold,
                 )
 
             return artifact

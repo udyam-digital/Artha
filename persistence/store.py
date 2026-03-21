@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeVar
 
@@ -51,8 +51,6 @@ def _timestamped_path(base_dir: Path, stem: str) -> Path:
 
 
 def model_now_timestamp() -> str:
-    from datetime import datetime
-
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
@@ -125,6 +123,43 @@ def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
     output_path = reports_dir / filename
     _write_text_atomic(report.model_dump_json(indent=2), output_path)
     return output_path
+
+
+def _judge_scores_path(ticker: str, settings: Settings | None = None) -> Path:
+    settings = settings or get_settings()
+    safe_ticker = ticker.upper().replace("/", "_").replace(" ", "_")
+    return settings.kite_data_dir / "companies" / f"{safe_ticker}_judge.json"
+
+
+def save_judge_scores(
+    ticker: str,
+    quality_scores: dict | None,
+    factual_scores: dict | None,
+    combined_overall: float,
+    passed: bool,
+    settings: Settings | None = None,
+) -> Path:
+    path = _judge_scores_path(ticker, settings=settings)
+    payload = {
+        "ticker": ticker.upper(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "quality_scores": quality_scores,
+        "factual_scores": factual_scores,
+        "combined_overall": round(combined_overall, 2),
+        "passed": passed,
+    }
+    _write_payload(payload, path)
+    return path
+
+
+def load_judge_scores(
+    ticker: str,
+    settings: Settings | None = None,
+) -> dict | None:
+    path = _judge_scores_path(ticker, settings=settings)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def company_analysis_path(ticker: str, settings: Settings | None = None) -> Path:

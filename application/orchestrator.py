@@ -15,6 +15,7 @@ from analysis.company import get_company_artifact_and_verdict, is_company_artifa
 from config import Settings
 from kite.runtime import KiteSyncResult, build_kite_client, sync_kite_data, sync_kite_data_with_client
 from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
+from observability.langfuse_client import init_langfuse
 from observability.token_budget import TokenBudgetManager
 from observability.usage import (
     count_input_tokens_exact,
@@ -98,8 +99,16 @@ def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> tuple[PortfolioR
     return report, actions
 
 
-def _load_analyst_prompt() -> str:
-    return (Path("skills") / "analyst_prompt.md").read_text(encoding="utf-8")
+def _build_analyst_prompt(settings: Settings) -> str:
+    """Load analyst_prompt.md and inject fiscal + search context variables."""
+    from analysis.fiscal import get_fiscal_context
+
+    template = (Path("skills") / "analyst_prompt.md").read_text(encoding="utf-8")
+    ctx = get_fiscal_context()
+    ctx["max_searches"] = str(settings.analyst_max_searches)
+    for key, value in ctx.items():
+        template = template.replace(f"${{{key}}}", value)
+    return template
 
 
 def _should_gate_to_hold(verdict: Verdict, thesis_intact: bool) -> bool:
@@ -293,9 +302,10 @@ async def run_full_analysis(
     6. Synthesize final report with one orchestrator Claude call
     7. Return PortfolioReport
     """
+    init_langfuse(settings)  # activate OTel provider before any @observe runs
     started = time.perf_counter()
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    skills_content = _load_analyst_prompt()
+    skills_content = _build_analyst_prompt(settings)
     price_context_by_symbol: dict[str, dict[str, float | str]] = {}
     budget = TokenBudgetManager(
         input_tokens_per_minute=settings.haiku_input_tpm,
@@ -547,8 +557,9 @@ async def run_single_company_analysis(
     ticker: str,
     exchange: str = "NSE",
 ) -> PortfolioReport:
+    init_langfuse(settings)  # activate OTel provider before any @observe runs
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    skills_content = _load_analyst_prompt()
+    skills_content = _build_analyst_prompt(settings)
     snapshot: PortfolioSnapshot | None = None
     try:
         from persistence.store import load_latest_portfolio_snapshot

@@ -137,6 +137,9 @@ Notes:
   - use `.github/skills/refactor/` for code refactoring and maintainability improvements
   - use `.github/skills/secret-scanning/` for configuring secret scanning and remediation
   - use `.github/skills/sql-code-review/` for SQL code review and security analysis
+  - use `.github/skills/agent-governance/` when adding or reviewing tool-access controls, policy enforcement, rate limits, audit trails, or trust boundaries in the agent loop
+  - use `.github/skills/ai-prompt-engineering-safety-review/` when creating, changing, or auditing any system prompt, skill prompt, or LLM instruction in `skills/` or `agent.py`
+  - use `.github/skills/architecture-blueprint-generator/` when producing or updating architectural documentation, diagrams, or `docs/timeline.md` entries
 - Treat repo-local skills as execution guidance for this codebase, not just reference material.
 
 ## Custom Agent Usage
@@ -166,7 +169,10 @@ Refresh this registry whenever the contents of `.github/agents/` change so the i
 
 Current skills available under `.github/skills/`:
 
+- `agent-governance`
 - `agentic-eval`
+- `ai-prompt-engineering-safety-review`
+- `architecture-blueprint-generator`
 - `autoresearch`
 - `codeql`
 - `conventional-commit`

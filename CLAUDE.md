@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Setup
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env  # then fill in ANTHROPIC_API_KEY
+cp .env.example .env  # then fill in ANTHROPIC_API_KEY, TAVILY_API_KEY
 
 # Kite auth
 .venv/bin/python main.py kite-login
@@ -33,45 +33,76 @@ cp .env.example .env  # then fill in ANTHROPIC_API_KEY
 # Tests
 .venv/bin/python -m pytest
 .venv/bin/python -m pytest tests/test_rebalance.py   # focused run
-.venv/bin/python -m pytest tests/test_agent.py
+.venv/bin/python -m pytest tests/test_analyst.py -k test_name  # single test
 ```
 
 ## Architecture
+
+### Package Layout
+
+```
+main.py                  # CLI only — no business logic here
+config.py                # Pydantic-settings; JSON fields KITE_MCP_ARGS/KITE_MCP_ENV_JSON need valid JSON in .env
+models.py                # All Pydantic schemas: Holding, PortfolioSnapshot, StockVerdict, PortfolioReport, CompanyAnalysisArtifact
+rebalance.py             # Deterministic drift math; PASSIVE_INSTRUMENTS excluded from rebalance
+reliability.py           # Retry helpers, FullRunFailed exception
+
+application/
+  orchestrator.py        # Verdict-driven run pipeline — the main "run" entrypoint
+  agent.py               # ArthaAgent loop: prompt construction, tool execution, <artha_report> parsing
+  research.py            # Deep-research orchestration (one sub-agent per holding)
+  reporting.py           # Report formatting helpers
+
+analysis/
+  analyst.py             # CompanyAnalyzer — per-holding analysis on Claude Haiku, parallelized
+  company.py             # Company artifact retrieval, freshness checks, verdict conversion
+  judge.py               # Verdict/confidence evaluation logic
+  fiscal.py              # Fiscal data helpers
+
+kite/
+  client.py              # KiteMCPClient (HTTP or stdio transport)
+  runtime.py             # Browser auth, same-day snapshot reuse, sync_kite_data()
+  tools.py               # Tool implementations: kite_get_portfolio, kite_get_price_history, etc.
+
+search/
+  tavily.py              # Tavily web search wrapper
+
+persistence/
+  store.py               # Snapshot and artifact persistence (replaces old snapshot_store.py)
+
+observability/
+  telemetry.py           # OpenTelemetry / Langfuse trace setup
+  usage.py               # LLM cost tracking, run summaries, JSONL logging
+  token_budget.py        # Sliding token budget for TPM compliance
+  langfuse_client.py     # Langfuse-specific client initialization
+
+api/
+  main.py                # FastAPI: /api/holdings, /api/reports, /api/reports/latest, /api/run (SSE)
+
+skills/                  # System prompt source material for LLM calls
+  analyst_prompt.md
+  portfolio_rules.md
+  equity_analysis.md
+```
 
 ### Request Flow
 
 ```
 main.py (CLI)
-  └─ orchestrator.py: run_full_analysis()
-       1. kite_runtime.py: sync_kite_data() → data/kite/portfolio/ + data/kite/mf/
-       2. tools.py: kite_get_price_history() for each holding (52w candles)
-       3. snapshot_store.py: load data/kite/companies/{ticker}.json (cache TTL: COMPANY_ANALYSIS_MAX_AGE_DAYS)
-       4. analyst.py: CompanyAnalyzer (Claude Haiku) → refreshes stale/missing artifacts
+  └─ application/orchestrator.py: run_full_analysis()
+       1. kite/runtime.py: sync_kite_data() → data/kite/portfolio/ + data/kite/mf/
+       2. kite/tools.py: kite_get_price_history() per holding (52w candles)
+       3. persistence/store.py: load cached company artifacts (TTL: COMPANY_ANALYSIS_MAX_AGE_DAYS)
+       4. analysis/analyst.py: CompanyAnalyzer (Claude Haiku) → refresh stale/missing artifacts
        5. rebalance.py: calculate_rebalancing_actions() → deterministic drift math
-       6. agent.py: ArthaAgent (Claude Sonnet) → final synthesis → PortfolioReport
-       7. snapshot_store.py: persist to reports/YYYYMMDD_HHMMSS_artha_report.json
+       6. application/agent.py: ArthaAgent (Claude Sonnet) → final synthesis → PortfolioReport
+       7. persistence/store.py: persist to reports/YYYYMMDD_HHMMSS_artha_report.json
 ```
 
 ### Model Split
 
-- **Claude Haiku** (`ANALYST_MODEL`): Per-holding analysis in `analyst.py` — cost-optimized, parallelized
-- **Claude Sonnet** (`MODEL`): Final portfolio synthesis in `agent.py` — quality-optimized
-
-### Key Files
-
-| File | Role |
-|------|------|
-| `agent.py` | ArthaAgent loop: prompt construction, tool execution, parses `<artha_report>` wrapper |
-| `tools.py` | KiteMCPClient (HTTP or stdio), tool implementations, `kite_get_portfolio/profile/price_history`, `tavily_search` |
-| `orchestrator.py` | Verdict-driven run pipeline, merges analyst verdicts with rebalancing math |
-| `analyst.py` | Per-holding CompanyAnalyzer using Haiku, outputs `CompanyAnalysisArtifact` |
-| `models.py` | Pydantic schemas: `Holding`, `PortfolioSnapshot`, `StockVerdict`, `PortfolioReport`, `CompanyAnalysisArtifact` |
-| `rebalance.py` | Drift calculation; passive instruments (LIQUIDBEES, NIFTYBEES, GOLDCASE, SILVERCASE) and MFs are excluded |
-| `snapshot_store.py` | Persistence for portfolio snapshots, company artifacts (with legacy field migration) |
-| `kite_runtime.py` | Kite browser auth, same-day snapshot reuse |
-| `config.py` | Pydantic-settings config; JSON fields `KITE_MCP_ARGS`/`KITE_MCP_ENV_JSON` require valid JSON text in `.env` |
-| `api/main.py` | FastAPI: `/api/holdings`, `/api/reports`, `/api/reports/latest`, `/api/run` (SSE streaming) |
-| `skills/` | System prompt source material: `analyst_prompt.md`, `portfolio_rules.md`, `equity_analysis.md` |
+- **Claude Haiku** (`ANALYST_MODEL`): Per-holding analysis in `analysis/analyst.py` — cost-optimized, parallelized with staggered starts and token budgets
+- **Claude Sonnet** (`MODEL`): Final portfolio synthesis in `application/agent.py` — quality-optimized, no-tool summary call
 
 ### Data Layout
 
@@ -84,50 +115,51 @@ reports/usage/            # LLM cost JSONL (llm_usage_*, run_summaries, run_erro
 reports/research/         # Per-holding deep research artifacts
 ```
 
-### Constraints
+## Constraints
 
 - Final LLM output must be wrapped in `<artha_report>...</artha_report>` and validate as `PortfolioReport`
 - Prefer graceful degradation over crashes when tool output is partial or malformed
-- Keep business logic out of `main.py`; it belongs in `agent.py`, `tools.py`, or `rebalance.py`
+- Keep business logic out of `main.py`; it belongs in `application/`, `analysis/`, `kite/`, or `rebalance.py`
 - Target Python 3.11+; keep types explicit and compatible with current Pydantic usage
 - Follow the existing async structure around Anthropic and MCP
+- MF holdings are informational only — never included in equity rebalance actions
+- Passive instruments (LIQUIDBEES, NIFTYBEES, GOLDCASE, SILVERCASE) are excluded from analyst fan-out and rebalancing but kept in portfolio totals
 
 ## Common Change Patterns
 
-**Add a CLI command:** Extend `build_parser()` and add handler in `main.py`, put logic elsewhere.
+**Add a CLI command:** Extend `build_parser()` and add handler in `main.py`, put logic in appropriate package.
 
-**Add/change a tool:** Update definitions and execution in `tools.py`, wire into `agent.py`, add tests for happy path and malformed payloads.
+**Add/change a tool:** Update definitions and execution in `kite/tools.py`, wire into `application/agent.py`, add tests for happy path and malformed payloads.
 
 **Adjust portfolio rules:** Deterministic logic → `rebalance.py`; prompt guidance → `skills/portfolio_rules.md`. Run `tests/test_rebalance.py`.
 
+**Change analyst behavior:** Update `analysis/analyst.py` or `skills/analyst_prompt.md`. Artifact schema changes go in `models.py`. Update `tests/test_analyst.py`.
+
 **Change prompts or tool definitions:** Update tests that assert prompt/tool behavior.
 
-## Additional Guidance
+## Environment Variables
 
-### Repo-local custom agents
+Minimum required:
+```
+ANTHROPIC_API_KEY=
+TAVILY_API_KEY=
+KITE_MCP_URL=https://mcp.kite.trade/mcp
+```
 
-The repository now includes the following custom agents under `.github/agents/`:
+Key optional settings (see `config.py` for full list):
+- `MODEL` / `ANALYST_MODEL`: Claude model routing
+- `ANALYST_PARALLELISM`, `ANALYST_MIN_START_INTERVAL_SECONDS`, `HAIKU_INPUT_TPM`, `HAIKU_OUTPUT_TPM`: rate limiting
+- `COMPANY_ANALYSIS_MAX_AGE_DAYS`: artifact cache TTL (default 7)
+- `KITE_MCP_ARGS` / `KITE_MCP_ENV_JSON`: must be valid JSON strings in `.env`
+- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`: optional Langfuse tracing
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: optional OTLP backend
 
-- `context-architect.agent.md`
-- `api-architect.agent.md`
-- `adr-generator.agent.md`
-- `critical-thinking.agent.md`
-- `agent-governance-reviewer.agent.md`
-- `doublecheck.agent.md`
+## Custom Agents and Skills
 
-Use them when relevant:
+Custom agents under `.github/agents/` and skills under `.github/skills/` are for GitHub Copilot workflows. When relevant:
 
-- Start with `Context Architect` for codebase organization, multi-file refactors, boundary mapping, and dependency-aware planning.
-- Use `API Architect` when a change touches `api/main.py`, CLI/API separation, service boundaries, request/response contracts, or streaming interfaces.
-- Use `ADR Generator` to record structural decisions under `docs/adr/` after choosing an architecture direction.
-- Use `critical-thinking.agent.md` to challenge assumptions before large reorganizations.
-- Use `agent-governance-reviewer.agent.md` for safety, auditability, policy, and trust-boundary reviews in this agentic financial-analysis system.
-- Use `doublecheck.agent.md` when verifying claims, calculations, or source-backed statements before presenting them as reliable.
+- `Context Architect` → `API Architect` → `ADR Generator` for structural work
+- `Agent Governance Reviewer` for safety/auditability changes in this financial-analysis system
+- `Doublecheck` for verifying factual or numerical claims
 
-For structure-related work in this repo, the default sequence is:
-
-1. `Context Architect`
-2. `API Architect`
-3. `ADR Generator`
-
-See `AGENTS.md` for the full development ruleset, skill registry (`.github/skills/`), custom agent registry (`.github/agents/`), and detailed environment variable reference.
+See `AGENTS.md` for the full registries and development ruleset.
