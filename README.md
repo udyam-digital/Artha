@@ -41,7 +41,7 @@ Optional Yahoo Finance MCP runtime for analyst enrichment:
 
 ```bash
 YFINANCE_MCP_COMMAND=uvx
-YFINANCE_MCP_ARGS=["--from","git+https://github.com/richin13/yahoo-finance-mcp","yahoo-finance-mcp"]
+YFINANCE_MCP_ARGS=["--from","git+https://github.com/richin13/yahoo-finance-mcp@f54e92663d23282fef913f47f6b1bd603e861cbb","yahoo-finance-mcp"]
 YFINANCE_MCP_ENV_JSON={}
 YFINANCE_MCP_TIMEOUT_SECONDS=30
 ```
@@ -50,7 +50,7 @@ Optional NSE India provider runtime for side-by-side market-data comparison:
 
 ```bash
 NSE_MCP_COMMAND=npx
-NSE_MCP_ARGS=["stock-nse-india","mcp"]
+NSE_MCP_ARGS=["stock-nse-india@1.3.0","mcp"]
 NSE_MCP_ENV_JSON={"NODE_ENV":"production"}
 NSE_MCP_TIMEOUT_SECONDS=30
 ```
@@ -135,6 +135,7 @@ Dashboard API endpoints:
 - `GET /api/reports`: report index with verdict counts and error counts
 - `GET /api/reports/latest`: latest full `PortfolioReport`
 - `GET /api/reports/{report_id}`: full saved report by filename stem
+- `GET /api/mf-holdings`: latest saved MF snapshot; returns 404 if no snapshot exists
 - `GET /api/price-history/{ticker}`: 1Y daily candles for a holding found in the latest report
 - `POST /api/run`: streamed SSE wrapper around `python main.py run`
 
@@ -207,6 +208,8 @@ Company artifact cache:
 - old Python-code-style analyst payloads are not reused; they are treated as invalid cache and refreshed
 - `reports/usage/llm_usage_YYYYMMDD.jsonl` stores the per-call Anthropic usage ledger used for cost analysis
 - `reports/usage/run_summaries.jsonl` stores one persistent cross-run summary row per portfolio, research, or ticker run
+- `reports/index.json` is an append-only sidecar maintained by `save_report()`; it caches verdict counts and metadata so `/api/reports` does not need to reparse every report file
+- `reports/manifests/{run_id}_manifest.json` stores a per-run evidence manifest with snapshot paths, analyst count, elapsed time, and verdict/error breakdown
 
 Data layout:
 
@@ -216,7 +219,8 @@ Data layout:
 - `data/kite/companies/`: per-company cached company-analysis artifacts
 - `data/kite/provider_compare/`: side-by-side provider comparison files such as `BSE_yfinance.json` and `BSE_nse_india.json`
 - `data/console_exports/`: local notes and reference exports
-- `reports/`: portfolio reports
+- `reports/`: portfolio reports + `index.json` sidecar
+- `reports/manifests/`: per-run evidence manifests
 - `reports/research/`: per-holding research files, combined digest, and index artifacts
 
 UI companion:
@@ -244,7 +248,7 @@ Artha provides analysis only. Never execute trades automatically from its output
 
 The repository includes a baseline GitHub automation setup:
 
-- `.github/workflows/ci.yml`: required PR CI for Python 3.11, pytest, and coverage with an 80% minimum threshold
+- `.github/workflows/ci.yml`: required PR CI — parallel `lint` job (ruff) and `tests` job (pytest, 80% coverage minimum)
 - `.github/workflows/codeql.yml`: required CodeQL scanning for Python on pull requests, pushes to `main`, and a weekly schedule
 - `.github/dependabot.yml`: weekly grouped updates for Python dependencies and GitHub Actions
 - `.github/copilot-instructions.md`: repository-wide Copilot guidance for review and code generation
@@ -285,7 +289,12 @@ Repo-local Copilot assets currently installed under `.github/skills/`:
 - `suggest-awesome-github-copilot-instructions`
 - `suggest-awesome-github-copilot-skills`
 
-Repo-local custom agents are present under `.github/agents/`. Repository-wide Copilot instructions are present in `.github/copilot-instructions.md`. There are currently no path-specific custom instruction files under `.github/instructions/`.
+Repo-local custom agents are present under `.github/agents/`. Repository-wide Copilot instructions are present in `.github/copilot-instructions.md`. Path-specific instruction files are installed under `.github/instructions/`:
+
+- `code-review-generic.instructions.md`: applies to all files — correctness, regression, and test-impact focus
+- `python-mcp-server.instructions.md`: applies to `kite/**`, `mcp_server.py`, `search/**` — read-only constraint, tool schema test coverage
+- `ai-prompt-engineering-safety.instructions.md`: applies to `skills/**`, `analysis/analyst.py`, `analysis/judge.py`, `application/agent.py`
+- `github-actions.instructions.md`: applies to `.github/workflows/**` — pinned versions, ruff + pytest jobs required
 
 For this repository, the highest-value skills are:
 

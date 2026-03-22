@@ -11,6 +11,7 @@ Yahoo Finance and NSE India are now live in the codebase (`search/`, `kite/tools
 - Yahoo Finance: strong general-purpose enrichment for NSE names — fundamentals and flat metrics. (`tests/test_yfinance_tool.py` covers this.)
 - `stock-nse-india`: good for exchange-specific metadata and 52-week data, but stdio transport prints banner text before JSON-RPC frames. Should eventually be replaced with a quieter wrapper.
 - Alpha Vantage: removed from active path — not worth the rate-limit pressure for Indian equities.
+- Runtime defaults are now version-pinned: Yahoo Finance MCP is pinned to Git commit `f54e92663d23282fef913f47f6b1bd603e861cbb`, and `stock-nse-india` is pinned to npm version `1.3.0`.
 
 ### MoSPI MCP integration
 
@@ -19,6 +20,8 @@ MoSPI data is now available via the `mcp__claude_ai_MoSPI_Statistics__` MCP serv
 ### MCP server
 
 `mcp_server.py` exists on the `adding_mcp` branch, exposing Artha capabilities as MCP tools. This is new surface area — ensure tool schemas are tested and that no order-placement tools are accidentally exposed (per the read-only constraint in `CLAUDE.md`).
+
+That test gap is now closed at a baseline level with `tests/test_mcp_server.py`, but the higher-value remaining check is an integration smoke test against a real saved report/artifact set.
 
 ## Highest Priority
 

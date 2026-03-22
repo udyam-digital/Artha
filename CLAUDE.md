@@ -55,8 +55,9 @@ application/
 
 analysis/
   analyst.py             # CompanyAnalyzer — per-holding analysis on Claude Haiku, parallelized
-  company.py             # Company artifact retrieval, freshness checks, verdict conversion
-  judge.py               # Verdict/confidence evaluation logic
+  company.py             # Company artifact retrieval, freshness checks (time + price-move), verdict conversion
+  judge.py               # Verdict/confidence evaluation logic (LLM-as-judge, factual grounding)
+  verify.py              # Deterministic numeric verifier: verify_portfolio_weights, verify_rebalance_consistency
   fiscal.py              # Fiscal data helpers
 
 kite/
@@ -77,7 +78,7 @@ observability/
   langfuse_client.py     # Langfuse-specific client initialization
 
 api/
-  main.py                # FastAPI: /api/holdings, /api/reports, /api/reports/latest, /api/run (SSE)
+  main.py                # FastAPI: /api/holdings, /api/mf-holdings, /api/reports, /api/reports/latest, /api/run (SSE)
 
 skills/                  # System prompt source material for LLM calls
   analyst_prompt.md
@@ -91,12 +92,14 @@ skills/                  # System prompt source material for LLM calls
 main.py (CLI)
   └─ application/orchestrator.py: run_full_analysis()
        1. kite/runtime.py: sync_kite_data() → data/kite/portfolio/ + data/kite/mf/
-       2. kite/tools.py: kite_get_price_history() per holding (52w candles)
-       3. persistence/store.py: load cached company artifacts (TTL: COMPANY_ANALYSIS_MAX_AGE_DAYS)
-       4. analysis/analyst.py: CompanyAnalyzer (Claude Haiku) → refresh stale/missing artifacts
-       5. rebalance.py: calculate_rebalancing_actions() → deterministic drift math
-       6. application/agent.py: ArthaAgent (Claude Sonnet) → final synthesis → PortfolioReport
-       7. persistence/store.py: persist to reports/YYYYMMDD_HHMMSS_artha_report.json
+       2. analysis/verify.py: verify_portfolio_weights() → log weight/value sanity warnings
+       3. kite/tools.py: kite_get_price_history() per holding (52w candles)
+       4. persistence/store.py: load cached company artifacts (TTL: COMPANY_ANALYSIS_MAX_AGE_DAYS + price-move threshold)
+       5. analysis/analyst.py: CompanyAnalyzer (Claude Haiku) → refresh stale/missing/price-moved artifacts
+       6. rebalance.py: calculate_rebalancing_actions() → deterministic drift math
+       7. application/agent.py: ArthaAgent (Claude Sonnet) → final synthesis → PortfolioReport
+       8. persistence/store.py: persist to reports/YYYYMMDD_HHMMSS_artha_report.json + update reports/index.json
+       9. persistence/store.py: save_run_manifest() → reports/manifests/{run_id}_manifest.json
 ```
 
 ### Model Split
@@ -109,8 +112,10 @@ main.py (CLI)
 ```
 data/kite/portfolio/      # Equity snapshots (reused within same day)
 data/kite/mf/             # MF snapshots
-data/kite/companies/      # Per-company analysis artifacts ({ticker}.json, TTL=7 days)
+data/kite/companies/      # Per-company analysis artifacts ({ticker}.json, TTL=7 days or price-move threshold)
 reports/                  # PortfolioReport JSON outputs
+reports/index.json        # Append-only report sidecar (id, filename, generated_at, verdict_counts, error_count)
+reports/manifests/        # Per-run evidence manifests ({run_id}_manifest.json)
 reports/usage/            # LLM cost JSONL (llm_usage_*, run_summaries, run_errors)
 reports/research/         # Per-holding deep research artifacts
 ```
@@ -150,6 +155,7 @@ Key optional settings (see `config.py` for full list):
 - `MODEL` / `ANALYST_MODEL`: Claude model routing
 - `ANALYST_PARALLELISM`, `ANALYST_MIN_START_INTERVAL_SECONDS`, `HAIKU_INPUT_TPM`, `HAIKU_OUTPUT_TPM`: rate limiting
 - `COMPANY_ANALYSIS_MAX_AGE_DAYS`: artifact cache TTL (default 7)
+- `COMPANY_CACHE_PRICE_MOVE_THRESHOLD_PCT`: invalidate cache if price moved more than this % since last analysis (default 15.0)
 - `KITE_MCP_ARGS` / `KITE_MCP_ENV_JSON`: must be valid JSON strings in `.env`
 - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`: optional Langfuse tracing
 - `OTEL_EXPORTER_OTLP_ENDPOINT`: optional OTLP backend

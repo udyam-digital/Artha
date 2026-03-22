@@ -15,11 +15,11 @@ DEFAULT_KITE_MCP_URL = "https://mcp.kite.trade/mcp"
 DEFAULT_YFINANCE_MCP_COMMAND = "uvx"
 DEFAULT_YFINANCE_MCP_ARGS = [
     "--from",
-    "git+https://github.com/richin13/yahoo-finance-mcp",
+    "git+https://github.com/richin13/yahoo-finance-mcp@f54e92663d23282fef913f47f6b1bd603e861cbb",
     "yahoo-finance-mcp",
 ]
 DEFAULT_NSE_MCP_COMMAND = "npx"
-DEFAULT_NSE_MCP_ARGS = ["stock-nse-india", "mcp"]
+DEFAULT_NSE_MCP_ARGS = ["stock-nse-india@1.3.0", "mcp"]
 DEFAULT_NSE_MCP_ENV_JSON = {"NODE_ENV": "production"}
 
 
