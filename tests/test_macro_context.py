@@ -77,3 +77,34 @@ async def test_macro_context_caching(monkeypatch) -> None:
 
     assert first == second
     assert calls["count"] == 3
+
+
+# ── MoSPI payload smoke tests ─────────────────────────────────────────────────
+
+
+def test_extract_mospi_records_cpi_payload() -> None:
+    payload = {
+        "data": [
+            {"month": "Jan-2026", "general_index": "4.5", "value": "4.5"},
+        ]
+    }
+    records = kite_tools._extract_mospi_records(payload)
+    assert len(records) >= 1, f"Expected at least 1 record, got {records}"
+    assert isinstance(records[0], dict)
+
+
+def test_extract_mospi_records_iip_payload() -> None:
+    payload = {
+        "data": [
+            {"month": "Dec-2025", "growth_rate": "3.2"},
+        ]
+    }
+    records = kite_tools._extract_mospi_records(payload)
+    assert len(records) >= 1, f"Expected at least 1 record, got {records}"
+    assert isinstance(records[0], dict)
+
+
+def test_find_value_case_insensitive() -> None:
+    record = {"GeneralIndex": "4.5"}
+    result = kite_tools._find_value(record, "generalindex", "general_index")
+    assert result == "4.5", f"Expected '4.5', got {result!r}"

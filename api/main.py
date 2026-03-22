@@ -116,6 +116,14 @@ def create_app() -> FastAPI:
             )
         return HoldingsResponse(**snapshot.model_dump(), mf_snapshot=mf_snapshot, live_status="live", live_error=None)
 
+    @app.get("/api/mf-holdings", response_model=MFSnapshot)
+    async def mf_holdings() -> MFSnapshot:
+        settings = get_settings()
+        try:
+            return load_latest_mf_snapshot(settings)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="No MF snapshot found.") from exc
+
     @app.get("/api/reports", response_model=list[ReportListItem])
     async def reports() -> list[ReportListItem]:
         return list_report_items(get_settings())

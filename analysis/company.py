@@ -101,10 +101,36 @@ def artifact_to_stock_verdict(
     )
 
 
-def is_company_artifact_fresh(*, artifact: CompanyDataCard | CompanyAnalysisArtifact, settings: Settings) -> bool:
+def is_company_artifact_fresh(
+    *,
+    artifact: CompanyDataCard | CompanyAnalysisArtifact,
+    settings: Settings,
+    current_price: float = 0.0,
+) -> bool:
     max_age = timedelta(days=settings.company_analysis_max_age_days)
     age = datetime.now(UTC) - artifact.generated_at
-    return age <= max_age
+    if age > max_age:
+        return False
+    if current_price > 0 and settings.company_cache_price_move_threshold_pct > 0:
+        cached_price = _get_cached_price(artifact)
+        if cached_price and cached_price > 0:
+            move_pct = abs((current_price - cached_price) / cached_price * 100)
+            if move_pct > settings.company_cache_price_move_threshold_pct:
+                logger.info(
+                    "[%s] price moved %.2f%% since cache (cached=%.2f, current=%.2f); treating cache as stale",
+                    artifact.ticker,
+                    move_pct,
+                    cached_price,
+                    current_price,
+                )
+                return False
+    return True
+
+
+def _get_cached_price(artifact: CompanyDataCard | CompanyAnalysisArtifact) -> float | None:
+    if isinstance(artifact, CompanyDataCard):
+        return artifact.analysis.stock_snapshot.current_price or None
+    return artifact.report_card.stock_snapshot.current_price or None
 
 
 async def get_company_artifact_and_verdict(
@@ -125,6 +151,7 @@ async def get_company_artifact_and_verdict(
         if cached.ticker.upper() == holding.tradingsymbol.upper() and is_company_artifact_fresh(
             artifact=cached,
             settings=settings,
+            current_price=holding.last_price,
         ):
             artifact = cached
             from_cache = True

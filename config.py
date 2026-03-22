@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     kite_login_poll_interval_seconds: int = Field(default=3, alias="KITE_LOGIN_POLL_INTERVAL_SECONDS")
     judge_retry_threshold: int = Field(default=45, alias="JUDGE_RETRY_THRESHOLD")
     judge_max_retries: int = Field(default=1, alias="JUDGE_MAX_RETRIES")
+    company_cache_price_move_threshold_pct: float = Field(default=15.0, alias="COMPANY_CACHE_PRICE_MOVE_THRESHOLD_PCT")
 
     @model_validator(mode="after")
     def resolve_relative_paths(self) -> Settings:

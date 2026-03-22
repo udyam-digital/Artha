@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,10 @@ class ReportListItem(BaseModel):
 
 
 def list_report_items(settings: Settings) -> list[ReportListItem]:
+    fast_path_items = _list_report_items_from_index(settings)
+    if fast_path_items is not None:
+        return fast_path_items
+    # Fallback: full file reparsing
     items: list[ReportListItem] = []
     for report_path in _list_report_files(settings):
         try:
@@ -43,6 +48,37 @@ def list_report_items(settings: Settings) -> list[ReportListItem]:
             continue
         items.append(_report_to_list_item(report_path, report))
     return items
+
+
+def _list_report_items_from_index(settings: Settings) -> list[ReportListItem] | None:
+    index_path = settings.reports_dir / "index.json"
+    if not index_path.exists():
+        return None
+    try:
+        raw: list[dict] = json.loads(index_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            return None
+        items: list[ReportListItem] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                items.append(
+                    ReportListItem(
+                        id=str(entry["id"]),
+                        filename=str(entry["filename"]),
+                        generated_at=datetime.fromisoformat(str(entry["generated_at"])),
+                        total_value=float(entry["total_value"]),
+                        error_count=int(entry["error_count"]),
+                        verdict_counts={str(k): int(v) for k, v in entry.get("verdict_counts", {}).items()},
+                    )
+                )
+            except (KeyError, ValueError, TypeError):
+                continue
+        items.sort(key=lambda x: x.generated_at, reverse=True)
+        return items
+    except Exception:
+        return None
 
 
 def get_latest_report(settings: Settings) -> PortfolioReport:

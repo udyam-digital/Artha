@@ -128,6 +128,53 @@ def save_report(report: PortfolioReport, reports_dir: Path) -> Path:
     filename = report.generated_at.strftime("%Y%m%d_%H%M%S_artha_report.json")
     output_path = reports_dir / filename
     _write_text_atomic(report.model_dump_json(indent=2), output_path)
+    _update_reports_index(report, filename, reports_dir)
+    return output_path
+
+
+def _verdict_bucket_count(report: PortfolioReport) -> dict[str, int]:
+    counts: dict[str, int] = {"BUY": 0, "HOLD": 0, "SELL": 0}
+    for verdict in report.verdicts:
+        v = verdict.verdict.value if hasattr(verdict.verdict, "value") else str(verdict.verdict)
+        if v in {"STRONG_BUY", "BUY"}:
+            counts["BUY"] += 1
+        elif v in {"STRONG_SELL", "SELL"}:
+            counts["SELL"] += 1
+        else:
+            counts["HOLD"] += 1
+    return counts
+
+
+def _update_reports_index(report: PortfolioReport, filename: str, reports_dir: Path) -> None:
+    index_path = reports_dir / "index.json"
+    try:
+        existing: list[dict] = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else []
+        if not isinstance(existing, list):
+            existing = []
+    except Exception:
+        existing = []
+
+    report_id = filename.removesuffix(".json")
+    verdict_error_count = sum(1 for v in report.verdicts if v.error)
+    entry: dict = {
+        "id": report_id,
+        "filename": filename,
+        "generated_at": report.generated_at.isoformat(),
+        "total_value": report.portfolio_snapshot.total_value,
+        "verdict_counts": _verdict_bucket_count(report),
+        "error_count": len(report.errors) + verdict_error_count,
+    }
+    # Remove any existing entry with the same id before appending
+    existing = [e for e in existing if e.get("id") != report_id]
+    existing.append(entry)
+    _write_text_atomic(json.dumps(existing, indent=2, ensure_ascii=True), index_path)
+
+
+def save_run_manifest(manifest: dict, reports_dir: Path) -> Path:
+    manifests_dir = reports_dir / "manifests"
+    run_id = str(manifest.get("run_id", model_now_timestamp()))
+    output_path = manifests_dir / f"{run_id}_manifest.json"
+    _write_payload(manifest, output_path)
     return output_path
 
 

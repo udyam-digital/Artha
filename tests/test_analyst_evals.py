@@ -1,3 +1,6 @@
+from datetime import UTC, datetime
+
+from models import PortfolioReport, PortfolioSnapshot, StockVerdict, Verdict
 from tests.test_analyst import make_report_card_payload
 
 # ── Scoring helpers ──────────────────────────────────────────────────────────
@@ -242,3 +245,108 @@ def test_eval_overall_score_good_output_is_high():
     assert result["overall"] >= 75, (
         f"Expected overall score to be high for good output. Got {result['overall']}\nDetail: {result}"
     )
+
+
+# ── PortfolioReport-level eval tests ─────────────────────────────────────────
+
+
+def _make_stock_verdict(
+    tradingsymbol: str,
+    verdict: Verdict,
+    rebalance_action: str = "HOLD",
+    rebalance_rupees: float = 0.0,
+    error: str | None = None,
+) -> StockVerdict:
+    return StockVerdict(
+        tradingsymbol=tradingsymbol,
+        company_name=f"{tradingsymbol} Corp",
+        verdict=verdict,
+        confidence="MEDIUM",
+        current_price=100.0,
+        buy_price=90.0,
+        pnl_pct=11.1,
+        thesis_intact=True,
+        bull_case="Strong growth",
+        bear_case="Execution risk",
+        what_to_watch="Quarterly earnings",
+        red_flags=[],
+        rebalance_action=rebalance_action,
+        rebalance_rupees=rebalance_rupees,
+        rebalance_reasoning="Test reasoning",
+        data_sources=["https://example-finance.in/report"],
+        yfinance_data={},
+        analysis_duration_seconds=1.0,
+        error=error,
+    )
+
+
+def _make_portfolio_report(verdicts: list[StockVerdict], errors: list[str] | None = None) -> PortfolioReport:
+    now = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
+    snapshot = PortfolioSnapshot(
+        fetched_at=now,
+        total_value=1_000_000.0,
+        available_cash=50_000.0,
+        holdings=[],
+    )
+    return PortfolioReport(
+        generated_at=now,
+        portfolio_snapshot=snapshot,
+        verdicts=verdicts,
+        portfolio_summary="Test portfolio summary.",
+        total_buy_required=sum(v.rebalance_rupees for v in verdicts if v.rebalance_action == "BUY"),
+        total_sell_required=sum(v.rebalance_rupees for v in verdicts if v.rebalance_action == "SELL"),
+        errors=errors or [],
+    )
+
+
+def test_eval_portfolio_report_verdict_distribution():
+    """Verdict counts for BUY/HOLD/SELL buckets must be computed correctly."""
+    verdicts = [
+        _make_stock_verdict("A", Verdict.BUY),
+        _make_stock_verdict("B", Verdict.STRONG_BUY),
+        _make_stock_verdict("C", Verdict.HOLD),
+        _make_stock_verdict("D", Verdict.SELL),
+        _make_stock_verdict("E", Verdict.STRONG_SELL),
+    ]
+    report = _make_portfolio_report(verdicts)
+
+    buy_count = sum(1 for v in report.verdicts if v.verdict in {Verdict.BUY, Verdict.STRONG_BUY})
+    hold_count = sum(1 for v in report.verdicts if v.verdict == Verdict.HOLD)
+    sell_count = sum(1 for v in report.verdicts if v.verdict in {Verdict.SELL, Verdict.STRONG_SELL})
+
+    assert buy_count == 2, f"Expected 2 BUY verdicts, got {buy_count}"
+    assert hold_count == 1, f"Expected 1 HOLD verdict, got {hold_count}"
+    assert sell_count == 2, f"Expected 2 SELL verdicts, got {sell_count}"
+    assert buy_count + hold_count + sell_count == len(report.verdicts)
+
+
+def test_eval_rebalance_math_consistency():
+    """total_buy_required must match the sum of rebalance_rupees for BUY actions."""
+    verdicts = [
+        _make_stock_verdict("X", Verdict.BUY, rebalance_action="BUY", rebalance_rupees=50_000.0),
+        _make_stock_verdict("Y", Verdict.BUY, rebalance_action="BUY", rebalance_rupees=30_000.0),
+        _make_stock_verdict("Z", Verdict.HOLD, rebalance_action="HOLD", rebalance_rupees=0.0),
+    ]
+    report = _make_portfolio_report(verdicts)
+
+    expected_total_buy = 80_000.0
+    assert report.total_buy_required == expected_total_buy, (
+        f"Expected total_buy_required={expected_total_buy}, got {report.total_buy_required}"
+    )
+    assert report.total_sell_required == 0.0, f"Expected total_sell_required=0, got {report.total_sell_required}"
+
+
+def test_eval_error_fallback_report():
+    """A report with errors is still a valid PortfolioReport; errors list must be non-empty."""
+    report = _make_portfolio_report(
+        verdicts=[],
+        errors=["Analyst failed for TICKER: timeout", "Macro context unavailable"],
+    )
+
+    assert len(report.errors) == 2, f"Expected 2 errors, got {len(report.errors)}"
+    assert report.verdicts == [], "Expected empty verdicts in error fallback report"
+    # Report should still be a valid Pydantic model
+    dumped = report.model_dump()
+    assert dumped["errors"][0] == "Analyst failed for TICKER: timeout"
+    assert dumped["total_buy_required"] == 0.0
+    assert dumped["total_sell_required"] == 0.0

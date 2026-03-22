@@ -12,6 +12,7 @@ from typing import Literal, TypedDict
 from anthropic import AsyncAnthropic
 
 from analysis.company import get_company_artifact_and_verdict, is_company_artifact_fresh
+from analysis.verify import verify_portfolio_weights
 from config import Settings
 from kite.runtime import KiteSyncResult, build_kite_client, sync_kite_data_with_client
 from kite.tools import ToolExecutionError, get_macro_context, kite_get_price_history
@@ -24,7 +25,7 @@ from observability.usage import (
     record_anthropic_usage,
     record_run_error,
 )
-from persistence.store import company_analysis_path, load_company_analysis_artifact
+from persistence.store import company_analysis_path, load_company_analysis_artifact, save_run_manifest
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
 from reliability import FullRunFailed, RetryFailure, run_with_retries
 
@@ -249,7 +250,7 @@ def _holding_requires_refresh(*, holding: Holding, settings: Settings) -> bool:
         return True
     return not (
         cached.ticker.upper() == holding.tradingsymbol.upper()
-        and is_company_artifact_fresh(artifact=cached, settings=settings)
+        and is_company_artifact_fresh(artifact=cached, settings=settings, current_price=holding.last_price)
     )
 
 
@@ -399,6 +400,13 @@ async def run_full_analysis(
         ) from exc
 
     macro_context, macro_errors = await _build_macro_summary()
+
+    weight_warnings = verify_portfolio_weights(
+        sync_result.portfolio_snapshot.holdings,
+        sync_result.portfolio_snapshot.total_value,
+    )
+    for warning in weight_warnings:
+        logger.warning("[portfolio_weights] %s", warning)
 
     semaphore = asyncio.Semaphore(settings.analyst_parallelism)
 
@@ -579,7 +587,7 @@ async def run_full_analysis(
         len(verdicts),
         settings.analyst_parallelism,
     )
-    return PortfolioReport(
+    report = PortfolioReport(
         generated_at=sync_result.portfolio_snapshot.fetched_at,
         portfolio_snapshot=sync_result.portfolio_snapshot,
         verdicts=verdicts,
@@ -588,6 +596,50 @@ async def run_full_analysis(
         total_sell_required=total_sell_required,
         errors=[error for error in [*errors, *nonfatal_errors] if error],
     )
+    _save_run_manifest_safe(
+        settings=settings,
+        report=report,
+        elapsed_seconds=elapsed,
+        analyst_count=len(verdicts),
+        snapshot_path=str(settings.kite_data_dir / "portfolio" / "latest_snapshot.json"),
+        failure_reasons=[error for error in [*errors, *nonfatal_errors] if error],
+    )
+    return report
+
+
+def _save_run_manifest_safe(
+    *,
+    settings: Settings,
+    report: PortfolioReport,
+    elapsed_seconds: float,
+    analyst_count: int,
+    snapshot_path: str,
+    failure_reasons: list[str],
+) -> None:
+    try:
+        verdict_counts: dict[str, int] = {"BUY": 0, "HOLD": 0, "SELL": 0}
+        for v in report.verdicts:
+            val = v.verdict.value if hasattr(v.verdict, "value") else str(v.verdict)
+            if val in {"STRONG_BUY", "BUY"}:
+                verdict_counts["BUY"] += 1
+            elif val in {"STRONG_SELL", "SELL"}:
+                verdict_counts["SELL"] += 1
+            else:
+                verdict_counts["HOLD"] += 1
+        run_id = report.generated_at.strftime("%Y%m%d_%H%M%S")
+        manifest = {
+            "run_id": run_id,
+            "generated_at": report.generated_at.isoformat(),
+            "snapshot_paths_used": [snapshot_path],
+            "analyst_inputs": analyst_count,
+            "elapsed_seconds": round(elapsed_seconds, 2),
+            "verdict_counts": verdict_counts,
+            "error_count": len(report.errors),
+            "failure_reasons": failure_reasons,
+        }
+        save_run_manifest(manifest, settings.reports_dir)
+    except Exception:
+        logger.warning("Failed to save run manifest; continuing", exc_info=True)
 
 
 async def run_single_company_analysis(

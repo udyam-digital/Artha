@@ -13,24 +13,30 @@ The project is analysis-only. Do not add auto-trading or order-placement behavio
 ## Main Entry Points
 
 - `main.py`: CLI entrypoint for auth, sync, report generation, and deep research
-- `agent.py`: `ArthaAgent` loop, prompt construction, tool handling, and final report parsing
-- `tools.py`: Kite MCP client, tool execution, native tool definitions, and helper parsing
-- `kite_runtime.py`: hosted Kite auth/session checks plus fresh equity and MF snapshot sync
-- `snapshot_store.py`: local snapshot and research artifact persistence
-- `research.py`: deep-research orchestration for one holding-level sub-agent per equity and MF holding
+- `mcp_server.py`: Artha MCP server entrypoint — exposes read-only analysis as MCP tools
+- `application/agent.py`: `ArthaAgent` loop, prompt construction, tool handling, and final report parsing
+- `application/orchestrator.py`: verdict-driven run pipeline — the main `run` entrypoint
+- `application/research.py`: deep-research orchestration for one holding-level sub-agent per equity and MF holding
+- `kite/tools.py`: Kite MCP client, tool execution, native tool definitions, and helper parsing
+- `kite/runtime.py`: hosted Kite auth/session checks plus fresh equity and MF snapshot sync
+- `persistence/store.py`: local snapshot and research artifact persistence
 - `rebalance.py`: Portfolio drift and action calculation
 - `models.py`: Pydantic schemas for holdings, snapshots, analyses, reports, and research artifacts
 - `config.py`: environment-driven settings and directory initialization
+- `analysis/analyst.py`: per-holding analysis on Claude Haiku, parallelized
+- `analysis/verify.py`: deterministic numeric verifier for portfolio weights and rebalance math
 
 ## Runtime Flow
 
 1. Load settings from `.env`.
-2. Connect to Kite MCP over HTTP or stdio.
+2. Connect to Kite MCP over HTTP or stdio (`kite/runtime.py`).
 3. Pull fresh equity holdings, MF holdings, margins, and profile data.
 4. Persist fresh local snapshots under `data/kite/portfolio/` and `data/kite/mf/`.
-5. Let the LLM call tools, especially `web_search`, before producing a final report.
-6. Validate the final response as `PortfolioReport`.
-7. Persist JSON outputs under `reports/`.
+5. Run `analysis/analyst.py` (Claude Haiku) per-holding in parallel — refresh stale or price-moved artifacts.
+6. Run deterministic rebalance math in `rebalance.py`.
+7. Synthesize final report via `application/agent.py` (Claude Sonnet).
+8. Validate the final response as `PortfolioReport`.
+9. Persist JSON outputs under `reports/`; update `reports/index.json` sidecar and `reports/manifests/`.
 
 If report parsing fails, the app falls back to a rebalance-oriented report with captured errors.
 
@@ -103,7 +109,8 @@ Notes:
 - Target Python 3.11+.
 - Keep types explicit and compatible with current Pydantic usage.
 - Follow the existing async structure around Anthropic and MCP.
-- Avoid embedding business logic in the CLI when it belongs in `agent.py`, `tools.py`, or `rebalance.py`.
+- Avoid embedding business logic in the CLI when it belongs in `application/agent.py`, `kite/tools.py`, or `rebalance.py`.
+- Path-specific Copilot review instructions are in `.github/instructions/` — keep them current when adding new modules.
 - When changing prompts or tool definitions, update tests that assert prompt/tool behavior.
 
 ## Skill Usage
@@ -219,14 +226,14 @@ Focused test runs:
 
 1. Extend `build_parser()` in `main.py`.
 2. Add a handler in `main.py`.
-3. Put reusable logic outside the CLI layer.
+3. Put reusable logic outside the CLI layer (in `application/`, `analysis/`, `kite/`, or `rebalance.py`).
 4. Add or update tests.
 
 ### Add or change a tool
 
-1. Update tool definitions in `tools.py`.
-2. Implement execution and error handling in `tools.py`.
-3. Wire the tool into `agent.py` if needed.
+1. Update tool definitions in `kite/tools.py`.
+2. Implement execution and error handling in `kite/tools.py`.
+3. Wire the tool into `application/agent.py` if needed.
 4. Add tests for both happy path and malformed payloads.
 
 ### Adjust portfolio rules
@@ -234,6 +241,12 @@ Focused test runs:
 1. Update `rebalance.py` or `skills/portfolio_rules.md`, depending on whether the rule is deterministic logic or prompt guidance.
 2. Confirm passive-instrument handling still matches expectations.
 3. Run `tests/test_rebalance.py` and related agent tests.
+
+### Change analyst behavior
+
+1. Update `analysis/analyst.py` or `skills/analyst_prompt.md`.
+2. Artifact schema changes go in `models.py`.
+3. Update `tests/test_analyst.py` and `tests/test_analyst_evals.py`.
 
 ## Safe Defaults For Future Agents
 
