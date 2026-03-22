@@ -77,15 +77,27 @@ The current cache TTL is time-based. Consider invalidating company artifacts ear
 
 Time-only freshness is simple, but it is not enough for a finance workflow.
 
+### 8. Add authenticated and version-pinned MoSPI data access
+
+Relevant files: `kite/tools.py`, `config.py`
+
+The new macro context path uses best-effort public MoSPI access and degrades safely on fetch failures. The next hardening step should be:
+
+- register and manage a proper MoSPI API token if the production endpoint requires it for complete datasets
+- pin the exact endpoint contracts and expected field names in code comments or fixtures
+- add one integration smoke test that validates the parser against a saved real payload for CPI, IIP, and GDP
+
+Macro context is useful, but it should not stay on an undocumented scrape-or-guess footing in a production-adjacent finance workflow.
+
 ## Lower Priority
 
-### 8. Formalize the MF API contract
+### 9. Formalize the MF API contract
 
 Relevant files: `api/main.py`, `models.py`
 
 The holdings endpoint currently mixes equity holdings with the latest saved MF snapshot. A dedicated `/api/mf-holdings` endpoint or a shared typed response contract would make the frontend boundary cleaner.
 
-### 9. Add better run manifests and evidence logs
+### 10. Add better run manifests and evidence logs
 
 Relevant files: `snapshot_store.py`, `usage_tracking.py`, `models.py`
 
@@ -98,7 +110,7 @@ Persist a per-run manifest with:
 
 Also consider an evidence trail per verdict rather than just final source URLs.
 
-### 10. Factor service-layer modules more explicitly
+### 11. Factor service-layer modules more explicitly
 
 Relevant files: `orchestrator.py`, `analyst.py`, `research.py`, `kite_runtime.py`
 

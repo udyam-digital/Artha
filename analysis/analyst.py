@@ -13,8 +13,9 @@ from analysis.fiscal import get_fiscal_context
 from analysis.judge import judge_factual_grounding, judge_report_card
 from observability.langfuse_client import get_langfuse, score_active_trace
 from config import Settings
-from models import AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
-from observability.usage import count_input_tokens_exact, log_estimated_input_tokens, record_anthropic_usage
+from kite.tools import get_yfinance_company_info, get_yfinance_snapshot
+from models import AnalystInputPayload, AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
+from observability.usage import count_input_tokens_exact, estimate_input_tokens, log_estimated_input_tokens, record_anthropic_usage
 from persistence.store import save_company_analysis_artifact, save_judge_scores
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
@@ -367,6 +368,7 @@ def _report_card_to_stock_verdict(
             f"and risk level {report_card.risk_matrix.risk_level.lower()}."
         ),
         data_sources=report_card.data_sources,
+        yfinance_data=artifact.yfinance_data,
         analysis_duration_seconds=duration_seconds,
         error=None,
     )
@@ -416,6 +418,7 @@ def _build_fallback_verdict(
         rebalance_rupees=0.0,
         rebalance_reasoning="Analyst failed, so no action is taken automatically.",
         data_sources=[],
+        yfinance_data={},
         analysis_duration_seconds=duration_seconds,
         error=error,
     )
@@ -599,6 +602,7 @@ def _build_company_artifact(
     report_card: AnalystReportCard,
     holding: Holding,
     config: Settings,
+    yfinance_data: dict[str, object] | None = None,
 ) -> CompanyAnalysisArtifact:
     return CompanyAnalysisArtifact(
         generated_at=datetime.now(timezone.utc),
@@ -606,6 +610,7 @@ def _build_company_artifact(
         exchange=holding.exchange,
         ticker=holding.tradingsymbol.upper(),
         report_card=report_card,
+        yfinance_data=yfinance_data or {},
     )
 
 
@@ -623,6 +628,7 @@ except ImportError:
 async def generate_company_artifact(
     holding: Holding,
     price_context: dict[str, float | str],
+    macro_context: str,
     skills_content: str,
     client: AsyncAnthropic | Any,
     config: Settings,
@@ -649,6 +655,7 @@ async def generate_company_artifact(
                     "52w_high": price_context.get("52w_high"),
                     "52w_low": price_context.get("52w_low"),
                     "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct"),
+                    "macro_context": macro_context,
                 },
                 metadata={"ticker": holding.tradingsymbol},
             )
@@ -657,8 +664,28 @@ async def generate_company_artifact(
     instructor_client = _ensure_instructor_client(client, api_key=config.anthropic_api_key)
     raw_client = _raw_client_for_counting(instructor_client)
     tools = [get_tavily_search_tool_definition(config)]
+    yfinance_data = await get_yfinance_snapshot(holding.tradingsymbol)
 
     fiscal = get_fiscal_context()
+    analyst_input = AnalystInputPayload(
+        tradingsymbol=holding.tradingsymbol,
+        exchange=holding.exchange,
+        quantity=holding.quantity,
+        average_price=holding.average_price,
+        last_price=holding.last_price,
+        pnl=holding.pnl,
+        pnl_pct=holding.pnl_pct,
+        current_weight_pct=holding.current_weight_pct,
+        target_weight_pct=holding.target_weight_pct,
+        drift=round(holding.current_weight_pct - holding.target_weight_pct, 3),
+        **{
+            "52w_high": price_context.get("52w_high", 0.0),
+            "52w_low": price_context.get("52w_low", 0.0),
+            "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct", 0.0),
+        },
+        macro_context=macro_context,
+        yfinance_data=yfinance_data,
+    )
     user_prompt = (
         f"Analyse this Indian stock. Today: {fiscal['today_date']}. "
         f"Latest published quarter: {fiscal['latest_quarter']}. "
@@ -675,30 +702,14 @@ async def generate_company_artifact(
         "eps_cagr MUST be per-share EPS, NOT absolute net profit in crores.\n"
         "Return exactly one valid JSON object. No markdown fences. No text outside the JSON.\n\n"
         "Input JSON:\n"
-        + json.dumps(
-            {
-                "tradingsymbol": holding.tradingsymbol,
-                "exchange": holding.exchange,
-                "quantity": holding.quantity,
-                "average_price": holding.average_price,
-                "last_price": holding.last_price,
-                "pnl": holding.pnl,
-                "pnl_pct": holding.pnl_pct,
-                "current_weight_pct": holding.current_weight_pct,
-                "target_weight_pct": holding.target_weight_pct,
-                "drift": round(holding.current_weight_pct - holding.target_weight_pct, 3),
-                "52w_high": price_context.get("52w_high", 0.0),
-                "52w_low": price_context.get("52w_low", 0.0),
-                "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct", 0.0),
-            },
-            ensure_ascii=True,
-            separators=(",", ":"),
-        )
+        + analyst_input.model_dump_json(by_alias=True)
     )
 
     if _retry_context:
         user_prompt = _retry_context + "\n\n" + user_prompt
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
+    system_prompt = skills_content.replace("{macro_context}", macro_context)
+    logger.info("[%s] analyst prompt token estimate: ~%s", holding.tradingsymbol, estimate_input_tokens(messages=messages, system=system_prompt))
     searches_used = 0
     all_collected_urls: list[str] = []
 
@@ -708,13 +719,13 @@ async def generate_company_artifact(
             client=instructor_client,
             model=config.analyst_model,
             messages=messages,
-            system=skills_content,
+            system=system_prompt,
             tools=tools,
         )
         call_kwargs = {
             "model": config.analyst_model,
             "max_tokens": config.analyst_max_tokens,
-            "system": skills_content,
+            "system": system_prompt,
             "messages": messages,
             "tools": tools,
         }
@@ -770,7 +781,12 @@ async def generate_company_artifact(
                 },
             )
 
-            artifact = _build_company_artifact(report_card=report_card, holding=holding, config=config)
+            artifact = _build_company_artifact(
+                report_card=report_card,
+                holding=holding,
+                config=config,
+                yfinance_data=yfinance_data,
+            )
             output_path = save_company_analysis_artifact(artifact, settings=config)
             logger.info(
                 "[%s] saved company analysis to %s in %.1fs",
@@ -896,6 +912,7 @@ async def generate_company_artifact(
                 return await generate_company_artifact(
                     holding=holding,
                     price_context=price_context,
+                    macro_context=macro_context,
                     skills_content=skills_content,
                     client=client,
                     config=config,
@@ -922,6 +939,7 @@ async def analyse_stock(
     holding: Holding,
     portfolio_total_value: float,
     price_context: dict[str, float | str],
+    macro_context: str,
     skills_content: str,
     client: AsyncAnthropic | Any,
     config: Settings,
@@ -936,6 +954,7 @@ async def analyse_stock(
         artifact = await generate_company_artifact(
             holding=holding,
             price_context=price_context,
+            macro_context=macro_context,
             skills_content=skills_content,
             client=client,
             config=config,
@@ -966,3 +985,77 @@ async def analyse_stock(
             verdict.verdict,
         )
         return verdict
+
+
+async def generate_yfinance_only_company_artifact(
+    holding: Holding,
+    client: AsyncAnthropic | Any,
+    config: Settings,
+) -> CompanyAnalysisArtifact:
+    raw_company_info = await get_yfinance_company_info(holding.tradingsymbol)
+    yfinance_data = await get_yfinance_snapshot(holding.tradingsymbol)
+    if not raw_company_info or not yfinance_data:
+        raise ValueError(f"Yahoo Finance data unavailable for {holding.tradingsymbol}")
+
+    instructor_client = _ensure_instructor_client(client, api_key=config.anthropic_api_key)
+    system_prompt = (
+        "You convert Yahoo Finance company data into a valid AnalystReportCard JSON object. "
+        "Use only the provided JSON. Do not browse, do not search, and do not invent unsupported facts. "
+        "When a field is missing, use 'Not available' for strings, 0.0 for numeric arrays, and [] for lists. "
+        "Set data_sources to [] and set all 12 source_map keys to 'Not available'."
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "Convert this Yahoo Finance company data into AnalystReportCard JSON. "
+                "Use direct numeric fields exactly when present. "
+                "Keep the verdict conservative. If evidence is incomplete, prefer HOLD and LOW confidence.\n\n"
+                f"Ticker: {holding.tradingsymbol}\n"
+                f"Flat snapshot:\n{json.dumps(yfinance_data, ensure_ascii=True)}\n\n"
+                f"Raw Yahoo Finance JSON:\n{json.dumps(raw_company_info, ensure_ascii=True)}"
+            ),
+        }
+    ]
+    await _log_input_tokens(
+        label=f"[{holding.tradingsymbol}] [yfinance-only]",
+        client=instructor_client,
+        model=config.analyst_model,
+        messages=messages,
+        system=system_prompt,
+    )
+    if hasattr(instructor_client.messages, "create_with_completion"):
+        report_card, completion = await instructor_client.messages.create_with_completion(
+            response_model=AnalystReportCard,
+            model=config.analyst_model,
+            max_tokens=config.analyst_max_tokens,
+            system=system_prompt,
+            messages=messages,
+        )
+        _log_response_usage(
+            label=f"[{holding.tradingsymbol}] analyst_yfinance_only",
+            model=config.analyst_model,
+            response=completion,
+            settings=config,
+            metadata={"phase": "analyst_yfinance_only", "ticker": holding.tradingsymbol},
+        )
+    else:
+        report_card = await instructor_client.messages.create(
+            response_model=AnalystReportCard,
+            model=config.analyst_model,
+            max_tokens=config.analyst_max_tokens,
+            system=system_prompt,
+            messages=messages,
+        )
+    report_card = _fix_internal_consistency(report_card)
+    report_card.data_sources = []
+    report_card.source_map = {key: "Not available" for key in REQUIRED_SOURCE_MAP_KEYS}
+    report_card.final_verdict.confidence = "Low"
+    artifact = _build_company_artifact(
+        report_card=report_card,
+        holding=holding,
+        config=config,
+        yfinance_data=yfinance_data,
+    )
+    save_company_analysis_artifact(artifact, settings=config)
+    return artifact

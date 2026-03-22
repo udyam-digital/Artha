@@ -14,7 +14,7 @@ from anthropic import AsyncAnthropic
 from analysis.company import get_company_artifact_and_verdict, is_company_artifact_fresh
 from config import Settings
 from kite.runtime import KiteSyncResult, build_kite_client, sync_kite_data, sync_kite_data_with_client
-from models import Holding, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
+from models import Holding, MacroContext, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
 from observability.langfuse_client import init_langfuse
 from observability.token_budget import TokenBudgetManager
 from observability.usage import (
@@ -26,7 +26,7 @@ from observability.usage import (
 from persistence.store import company_analysis_path, load_company_analysis_artifact
 from reliability import FullRunFailed, RetryFailure, run_with_retries
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
-from kite.tools import ToolExecutionError, kite_get_price_history
+from kite.tools import ToolExecutionError, get_macro_context, kite_get_price_history
 
 
 class PhaseEvent(TypedDict):
@@ -55,6 +55,31 @@ RunEventCallback = Callable[[RunEvent], None]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _format_macro_value(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:.2f}"
+
+
+async def _build_macro_summary() -> tuple[str, list[str]]:
+    try:
+        macro = await get_macro_context()
+    except Exception:
+        macro = MacroContext(fetch_errors=["macro_context: failed to initialize"])
+    errors = list(macro.fetch_errors)
+    if (
+        macro.cpi_headline_yoy is None
+        and macro.iip_growth_latest is None
+        and macro.gdp_growth_latest is None
+    ):
+        return "", errors
+    as_of_date = macro.as_of_date or "unknown"
+    summary = (
+        f"Macro (as of {as_of_date}): CPI {_format_macro_value(macro.cpi_headline_yoy)}% | "
+        f"IIP growth {_format_macro_value(macro.iip_growth_latest)}% | "
+        f"GDP growth {_format_macro_value(macro.gdp_growth_latest)}%"
+    )
+    return summary, errors
 
 
 async def _log_portfolio_summary_input_tokens(
@@ -307,6 +332,8 @@ async def run_full_analysis(
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     skills_content = _build_analyst_prompt(settings)
     price_context_by_symbol: dict[str, dict[str, float | str]] = {}
+    macro_context = ""
+    macro_errors: list[str] = []
     budget = TokenBudgetManager(
         input_tokens_per_minute=settings.haiku_input_tpm,
         output_tokens_per_minute=settings.haiku_output_tpm,
@@ -371,6 +398,8 @@ async def run_full_analysis(
             partial_artifact_path=exc.partial_artifact_path,
         ) from exc
 
+    macro_context, macro_errors = await _build_macro_summary()
+
     semaphore = asyncio.Semaphore(settings.analyst_parallelism)
 
     async def bounded_analyse(holding: Holding, index: int) -> StockVerdict:
@@ -383,6 +412,7 @@ async def run_full_analysis(
                 lambda: get_company_artifact_and_verdict(
                     holding=holding,
                     price_context=price_context_by_symbol.get(holding.tradingsymbol, _default_price_context()),
+                    macro_context=macro_context,
                     skills_content=skills_content,
                     client=client,
                     settings=settings,
@@ -469,6 +499,7 @@ async def run_full_analysis(
     holding_by_symbol = {holding.tradingsymbol: holding for holding in equity_holdings}
     final_actions: dict[str, RebalancingAction] = {}
     errors = [verdict.error for verdict in verdicts if verdict.error]
+    nonfatal_errors = list(macro_errors)
     if errors:
         first_error = next((verdict for verdict in verdicts if verdict.error), None)
         error_path = record_run_error(
@@ -503,7 +534,7 @@ async def run_full_analysis(
                 verdicts=verdicts,
                 snapshot=sync_result.portfolio_snapshot,
                 mf_symbols=[holding.tradingsymbol for holding in sync_result.mf_snapshot.holdings],
-                errors=[error for error in errors if error],
+                errors=[error for error in [*errors, *nonfatal_errors] if error],
             ),
             attempts=settings.transient_retry_attempts,
             base_delay_seconds=settings.transient_retry_base_delay_seconds,
@@ -547,7 +578,7 @@ async def run_full_analysis(
         portfolio_summary=portfolio_summary,
         total_buy_required=total_buy_required,
         total_sell_required=total_sell_required,
-        errors=[error for error in errors if error],
+        errors=[error for error in [*errors, *nonfatal_errors] if error],
     )
 
 
@@ -560,6 +591,7 @@ async def run_single_company_analysis(
     init_langfuse(settings)  # activate OTel provider before any @observe runs
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     skills_content = _build_analyst_prompt(settings)
+    macro_context, macro_errors = await _build_macro_summary()
     snapshot: PortfolioSnapshot | None = None
     try:
         from persistence.store import load_latest_portfolio_snapshot
@@ -601,6 +633,7 @@ async def run_single_company_analysis(
     _, verdict, from_cache = await get_company_artifact_and_verdict(
         holding=holding,
         price_context=price_context,
+        macro_context=macro_context,
         skills_content=skills_content,
         client=client,
         settings=settings,
@@ -639,5 +672,5 @@ async def run_single_company_analysis(
         portfolio_summary=summary,
         total_buy_required=verdict.rebalance_rupees if verdict.rebalance_action == "BUY" else 0.0,
         total_sell_required=verdict.rebalance_rupees if verdict.rebalance_action == "SELL" else 0.0,
-        errors=[verdict.error] if verdict.error else [],
+        errors=[error for error in [verdict.error, *macro_errors] if error],
     )

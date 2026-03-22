@@ -13,6 +13,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_KITE_MCP_URL = "https://mcp.kite.trade/mcp"
+DEFAULT_YFINANCE_MCP_COMMAND = "uvx"
+DEFAULT_YFINANCE_MCP_ARGS = [
+    "--from",
+    "git+https://github.com/richin13/yahoo-finance-mcp",
+    "yahoo-finance-mcp",
+]
 
 
 class Settings(BaseSettings):
@@ -54,6 +60,10 @@ class Settings(BaseSettings):
     kite_mcp_args: list[str] = Field(default_factory=list, alias="KITE_MCP_ARGS")
     kite_mcp_env_json: dict[str, str] = Field(default_factory=dict, alias="KITE_MCP_ENV_JSON")
     kite_mcp_timeout_seconds: int = Field(default=30, alias="KITE_MCP_TIMEOUT_SECONDS")
+    yfinance_mcp_command: str = Field(default=DEFAULT_YFINANCE_MCP_COMMAND, alias="YFINANCE_MCP_COMMAND")
+    yfinance_mcp_args: list[str] = Field(default_factory=lambda: list(DEFAULT_YFINANCE_MCP_ARGS), alias="YFINANCE_MCP_ARGS")
+    yfinance_mcp_env_json: dict[str, str] = Field(default_factory=dict, alias="YFINANCE_MCP_ENV_JSON")
+    yfinance_mcp_timeout_seconds: int = Field(default=30, alias="YFINANCE_MCP_TIMEOUT_SECONDS")
     kite_data_dir: Path = Field(default=ROOT_DIR / "data" / "kite", alias="KITE_DATA_DIR")
     kite_login_timeout_seconds: int = Field(default=180, alias="KITE_LOGIN_TIMEOUT_SECONDS")
     kite_login_poll_interval_seconds: int = Field(default=3, alias="KITE_LOGIN_POLL_INTERVAL_SECONDS")
@@ -104,9 +114,17 @@ class Settings(BaseSettings):
             return ""
         return str(value).strip()
 
-    @field_validator("kite_mcp_args", mode="before")
+    @field_validator("yfinance_mcp_command", mode="before")
     @classmethod
-    def parse_kite_mcp_args(cls, value: object) -> list[str]:
+    def parse_yfinance_mcp_command(cls, value: object) -> str:
+        if value is None:
+            return DEFAULT_YFINANCE_MCP_COMMAND
+        command = str(value).strip()
+        return command or DEFAULT_YFINANCE_MCP_COMMAND
+
+    @field_validator("kite_mcp_args", "yfinance_mcp_args", mode="before")
+    @classmethod
+    def parse_mcp_args(cls, value: object) -> list[str]:
         if value in (None, "", []):
             return []
         if isinstance(value, list):
@@ -121,9 +139,9 @@ class Settings(BaseSettings):
             return [str(item) for item in parsed]
         raise ValueError("KITE_MCP_ARGS must be a list or JSON array string.")
 
-    @field_validator("kite_mcp_env_json", mode="before")
+    @field_validator("kite_mcp_env_json", "yfinance_mcp_env_json", mode="before")
     @classmethod
-    def parse_kite_mcp_env_json(cls, value: object) -> dict[str, str]:
+    def parse_mcp_env_json(cls, value: object) -> dict[str, str]:
         if value in (None, "", {}):
             return {}
         if isinstance(value, dict):

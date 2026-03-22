@@ -10,11 +10,17 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic
 
-from application.orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
+from analysis import generate_yfinance_only_company_artifact
+from application.orchestrator import (
+    RunEvent,
+    build_rebalance_only_report,
+    run_full_analysis,
+    run_single_company_analysis,
+)
 from application.research import DeepResearchOrchestrator
 from config import configure_logging, get_settings
 from kite.runtime import KiteSyncResult, load_same_day_kite_sync_result, sync_kite_data
-from models import Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
+from models import CompanyAnalysisArtifact, Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
 from observability.telemetry import initialize_telemetry, shutdown_telemetry
 from observability.usage import format_run_summary, format_usage_summary, load_recent_run_summaries, usage_run
 from persistence.store import load_latest_portfolio_snapshot, save_report
@@ -147,6 +153,19 @@ def print_single_verdict(verdict: StockVerdict) -> None:
     print(f"Duration:             {verdict.analysis_duration_seconds:.1f}s")
     if verdict.error:
         print(f"Error:                {verdict.error}")
+
+
+def print_company_artifact(artifact: CompanyAnalysisArtifact) -> None:
+    print("ANALYST REPORT CARD")
+    print(f"Stock:                {artifact.ticker} ({artifact.report_card.stock_snapshot.name})")
+    print(f"Verdict:              {artifact.report_card.final_verdict.verdict}")
+    print(f"Confidence:           {artifact.report_card.final_verdict.confidence}")
+    print(f"Sector:               {artifact.report_card.stock_snapshot.sector}")
+    print(f"Current Price:        {format_rupees(artifact.report_card.stock_snapshot.current_price)}")
+    print(f"YFinance Fields:      {', '.join(sorted(artifact.yfinance_data)) if artifact.yfinance_data else 'None'}")
+    print(f"Sources:              {len(artifact.report_card.data_sources)}")
+    print()
+    print(artifact.model_dump_json(indent=2, by_alias=True))
 
 
 def build_standalone_holding(symbol: str, exchange: str = "NSE") -> Holding:
@@ -362,6 +381,25 @@ async def handle_usage_report(args: argparse.Namespace) -> int:
     return 0
 
 
+async def handle_analyst(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    holding = build_standalone_holding(args.ticker, exchange=args.exchange)
+    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    with usage_run(settings=settings, command=f"analyst --ticker {args.ticker.upper()}") as usage_summary:
+        artifact = await generate_yfinance_only_company_artifact(
+            holding=holding,
+            client=client,
+            config=settings,
+        )
+
+    print_company_artifact(artifact)
+    print()
+    print(format_usage_summary(usage_summary))
+    print(f"LLM usage log saved to: {usage_summary.usage_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Artha portfolio research and rebalancing agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -376,6 +414,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("holdings", help="Print the current holdings table without an LLM call")
+    analyst_parser = subparsers.add_parser("analyst", help="Run one standalone analyst report card without Kite or Artha summary")
+    analyst_parser.add_argument("--ticker", required=True, help="Ticker to analyse")
+    analyst_parser.add_argument("--exchange", default="NSE", help="Exchange for standalone analyst mode, default NSE")
     subparsers.add_parser("kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot")
     subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
     subparsers.add_parser("rebalance", help="Generate a rebalancing report from the latest saved local equity snapshot")
@@ -397,6 +438,8 @@ async def async_main() -> int:
             return await handle_run(args)
         if args.command == "holdings":
             return await handle_holdings()
+        if args.command == "analyst":
+            return await handle_analyst(args)
         if args.command == "kite-login":
             return await handle_kite_login()
         if args.command == "kite-sync":

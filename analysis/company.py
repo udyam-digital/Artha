@@ -96,6 +96,7 @@ def artifact_to_stock_verdict(
             f"{report_card.risk_matrix.risk_level.lower()}."
         ),
         data_sources=report_card.data_sources,
+        yfinance_data=artifact.yfinance_data,
         analysis_duration_seconds=duration_seconds,
         error=None,
     )
@@ -111,6 +112,7 @@ async def get_company_artifact_and_verdict(
     *,
     holding: Holding,
     price_context: dict[str, float | str],
+    macro_context: str = "",
     skills_content: str,
     client: AsyncAnthropic,
     settings: Settings,
@@ -142,6 +144,7 @@ async def get_company_artifact_and_verdict(
         artifact = await generate_company_artifact(
             holding=holding,
             price_context=price_context,
+            macro_context=macro_context,
             skills_content=skills_content,
             client=client,
             config=settings,

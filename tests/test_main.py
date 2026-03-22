@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 import main
 from config import Settings
+from models import CompanyAnalysisArtifact
 from reliability import FullRunFailed
+from tests.test_analyst import make_report_card_payload
 
 
 pytestmark = pytest.mark.anyio
@@ -67,3 +70,34 @@ async def test_handle_run_reuses_same_day_snapshots(tmp_path: Path, monkeypatch,
 
     assert rc == 1
     assert "Using today's saved Kite snapshots." in captured.out
+
+
+async def test_handle_analyst_runs_standalone_pipeline(tmp_path: Path, monkeypatch, capsys) -> None:
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "AsyncAnthropic", lambda api_key: object())
+
+    async def fake_generate_yfinance_only_company_artifact(**kwargs):
+        assert kwargs["holding"].tradingsymbol == "BSE"
+        return CompanyAnalysisArtifact(
+            generated_at="2026-03-22T09:00:00Z",
+            source_model=settings.analyst_model,
+            exchange="NSE",
+            ticker="BSE",
+            report_card=make_report_card_payload("BSE"),
+            yfinance_data={"ticker": "BSE.NS", "cmp": 2500.0},
+        )
+
+    monkeypatch.setattr(
+        main,
+        "generate_yfinance_only_company_artifact",
+        fake_generate_yfinance_only_company_artifact,
+    )
+
+    args = argparse.Namespace(ticker="BSE", exchange="NSE")
+    rc = await main.handle_analyst(args)
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "ANALYST REPORT CARD" in captured.out
+    assert "BSE.NS" in captured.out

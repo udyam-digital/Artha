@@ -9,14 +9,44 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from config import Settings, get_settings
-from kite.client import KiteMCPClient, ToolExecutionError
-from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
+from kite.client import MCPToolClient, KiteMCPClient, ToolExecutionError, load_yfinance_server_definition
+from models import Holding, MFHolding, MFSnapshot, MacroContext, PortfolioSnapshot
 from rebalance import PASSIVE_INSTRUMENTS
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
 
 logger = logging.getLogger(__name__)
+_YFINANCE_FIELDS = (
+    "ticker",
+    "cmp",
+    "fifty_two_week_low",
+    "fifty_two_week_high",
+    "trailing_pe",
+    "forward_pe",
+    "price_to_book",
+    "revenue_growth_pct",
+    "earnings_growth_pct",
+    "profit_margin_pct",
+    "analyst_count",
+    "target_mean_price",
+    "target_median_price",
+    "upside_pct",
+    "sector",
+    "industry",
+)
+_MACRO_CONTEXT_CACHE: dict[str, MacroContext] = {}
+_MOSPI_CPI_URL = "https://api.mospi.gov.in/api/getCPIIndex"
+_MOSPI_IIP_URL_CANDIDATES = (
+    "https://api.mospi.gov.in/api/getIIPIndex",
+    "https://api.mospi.gov.in/api/getIIPGeneralIndex",
+)
+_MOSPI_GDP_URL_CANDIDATES = (
+    "https://api.mospi.gov.in/api/getNASData",
+    "https://api.mospi.gov.in/api/getNASIndex",
+)
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:
@@ -35,6 +65,274 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_percent(value: Any) -> float | None:
+    numeric = _coerce_optional_float(value)
+    if numeric is None:
+        return None
+    return round(numeric * 100.0, 2)
+
+
+def _empty_yfinance_snapshot(ticker: str) -> dict[str, Any]:
+    return {key: (ticker if key == "ticker" else None) for key in _YFINANCE_FIELDS}
+
+
+def _normalize_yfinance_ticker(ticker_ns: str) -> str:
+    normalized = str(ticker_ns).strip().upper()
+    if not normalized:
+        return normalized
+    return normalized if normalized.endswith(".NS") else f"{normalized}.NS"
+
+
+def _map_yfinance_snapshot(ticker: str, raw_payload: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _empty_yfinance_snapshot(ticker)
+    cmp_value = _coerce_optional_float(raw_payload.get("currentPrice"))
+    if cmp_value is None:
+        cmp_value = _coerce_optional_float(raw_payload.get("regularMarketPrice"))
+    target_mean_price = _coerce_optional_float(raw_payload.get("targetMeanPrice"))
+    snapshot.update(
+        {
+            "cmp": cmp_value,
+            "fifty_two_week_low": _coerce_optional_float(raw_payload.get("fiftyTwoWeekLow")),
+            "fifty_two_week_high": _coerce_optional_float(raw_payload.get("fiftyTwoWeekHigh")),
+            "trailing_pe": _coerce_optional_float(raw_payload.get("trailingPE")),
+            "forward_pe": _coerce_optional_float(raw_payload.get("forwardPE")),
+            "price_to_book": _coerce_optional_float(raw_payload.get("priceToBook")),
+            "revenue_growth_pct": _coerce_percent(raw_payload.get("revenueGrowth")),
+            "earnings_growth_pct": _coerce_percent(raw_payload.get("earningsGrowth") or raw_payload.get("earningsQuarterlyGrowth")),
+            "profit_margin_pct": _coerce_percent(raw_payload.get("profitMargins")),
+            "analyst_count": _coerce_optional_int(raw_payload.get("numberOfAnalystOpinions")),
+            "target_mean_price": target_mean_price,
+            "target_median_price": _coerce_optional_float(raw_payload.get("targetMedianPrice")),
+            "sector": str(raw_payload.get("sector")) if raw_payload.get("sector") else None,
+            "industry": str(raw_payload.get("industry")) if raw_payload.get("industry") else None,
+        }
+    )
+    snapshot["upside_pct"] = (
+        round(((target_mean_price - cmp_value) / cmp_value) * 100.0, 2)
+        if cmp_value and target_mean_price is not None
+        else None
+    )
+    return snapshot
+
+
+def _is_missing_company_response(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        raw_text = str(payload.get("raw_text", "")).lower()
+        return "not found" in raw_text or "error:" in raw_text
+    return isinstance(payload, str) and ("not found" in payload.lower() or "error:" in payload.lower())
+
+
+def _coerce_json_object(payload: Any) -> Any:
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return payload
+    return payload
+
+
+def _extract_mospi_records(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("data", "records", "result", "response", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = _extract_mospi_records(value)
+                if nested:
+                    return nested
+    return []
+
+
+def _find_value(record: dict[str, Any], *keys: str) -> Any:
+    lowered = {str(key).lower(): value for key, value in record.items()}
+    for key in keys:
+        if key.lower() in lowered:
+            return lowered[key.lower()]
+    return None
+
+
+def _month_sort_value(value: Any) -> int:
+    text = str(value or "").strip()
+    month_map = {
+        "jan": 1, "january": 1,
+        "feb": 2, "february": 2,
+        "mar": 3, "march": 3,
+        "apr": 4, "april": 4,
+        "may": 5,
+        "jun": 6, "june": 6,
+        "jul": 7, "july": 7,
+        "aug": 8, "august": 8,
+        "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10,
+        "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+    if text.isdigit():
+        return int(text)
+    return month_map.get(text.lower(), 0)
+
+
+def _record_sort_key(record: dict[str, Any]) -> tuple[int, int]:
+    year = _coerce_int(_find_value(record, "year", "financial_year"), default=0)
+    month = _month_sort_value(_find_value(record, "month", "month_name", "monthcode"))
+    return (year, month)
+
+
+def _format_as_of_date(record: dict[str, Any]) -> str | None:
+    date_value = _find_value(record, "date", "period", "reference_date")
+    if date_value:
+        return str(date_value)
+    year = _find_value(record, "year", "financial_year")
+    month = _find_value(record, "month", "month_name")
+    if year and month:
+        return f"{month} {year}"
+    if year:
+        return str(year)
+    return None
+
+
+def _pick_cpi_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    filtered = []
+    for record in records:
+        group = str(_find_value(record, "group", "group_name", "description") or "").lower()
+        series = str(_find_value(record, "series", "series_name") or "").lower()
+        if "current" in series and ("all groups" in group or "general" in group or not group):
+            filtered.append(record)
+    if not filtered:
+        filtered = records
+    return max(filtered, key=_record_sort_key, default=None)
+
+
+def _pick_latest_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return max(records, key=_record_sort_key, default=None)
+
+
+def _extract_percent_from_record(record: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = _find_value(record, key)
+        numeric = _coerce_optional_float(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+async def _request_mospi_json(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict[str, Any],
+) -> Any:
+    last_error: Exception | None = None
+    for method in ("GET", "POST"):
+        try:
+            if method == "GET":
+                response = await client.get(url, params=params)
+            else:
+                response = await client.post(url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"MoSPI request failed for {url}: {last_error}")
+
+
+async def _fetch_cpi_context(client: httpx.AsyncClient) -> tuple[float | None, str | None]:
+    payload = await _request_mospi_json(
+        client,
+        _MOSPI_CPI_URL,
+        params={
+            "Format": "JSON",
+            "Series": "Current_series_2012",
+        },
+    )
+    records = _extract_mospi_records(payload)
+    record = _pick_cpi_record(records)
+    if record is None:
+        return None, None
+    value = _extract_percent_from_record(
+        record,
+        "inflation_rate",
+        "inflation",
+        "yoy",
+        "year_on_year",
+        "group_inflation",
+    )
+    return value, _format_as_of_date(record)
+
+
+async def _fetch_iip_context(client: httpx.AsyncClient) -> tuple[float | None, str | None]:
+    last_error: Exception | None = None
+    for url in _MOSPI_IIP_URL_CANDIDATES:
+        try:
+            payload = await _request_mospi_json(
+                client,
+                url,
+                params={
+                    "Format": "JSON",
+                    "base_year": "2011-12",
+                    "frequency": "Monthly",
+                },
+            )
+            records = _extract_mospi_records(payload)
+            record = _pick_latest_record(records)
+            if record is None:
+                continue
+            value = _extract_percent_from_record(record, "growth_rate", "growth", "growth_percent", "yoy")
+            return value, _format_as_of_date(record)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    return None, None
+
+
+async def _fetch_gdp_context(client: httpx.AsyncClient) -> tuple[float | None, str | None]:
+    last_error: Exception | None = None
+    for url in _MOSPI_GDP_URL_CANDIDATES:
+        try:
+            payload = await _request_mospi_json(
+                client,
+                url,
+                params={
+                    "Format": "JSON",
+                    "base_year": "2022-23",
+                    "series": "Current",
+                },
+            )
+            records = _extract_mospi_records(payload)
+            record = _pick_latest_record(records)
+            if record is None:
+                continue
+            value = _extract_percent_from_record(record, "growth_rate", "growth", "gdp_growth", "yoy")
+            return value, _format_as_of_date(record)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    return None, None
 
 
 def _holding_market_value(item: dict[str, Any]) -> float:
@@ -309,6 +607,111 @@ async def kite_get_price_history(
         "price_1y_ago": price_1y_ago,
         "price_change_1y_pct": ((current_price / price_1y_ago) - 1) * 100.0 if price_1y_ago else 0.0,
     }
+
+
+async def get_yfinance_snapshot(ticker_ns: str) -> dict[str, Any]:
+    settings = get_settings()
+    ticker = _normalize_yfinance_ticker(ticker_ns)
+    if not ticker:
+        return {}
+
+    try:
+        definition = load_yfinance_server_definition(settings)
+        async with MCPToolClient(definition, timeout_seconds=settings.yfinance_mcp_timeout_seconds) as client:
+            raw_payload = await client.call_tool("get_stock_info", {"ticker": ticker})
+    except Exception as exc:
+        logger.warning("Yahoo Finance snapshot fetch failed for %s: %s", ticker, exc)
+        return {}
+
+    if isinstance(raw_payload, dict) and "result" in raw_payload:
+        raw_payload = _coerce_json_object(raw_payload["result"])
+    else:
+        raw_payload = _coerce_json_object(raw_payload)
+
+    if _is_missing_company_response(raw_payload):
+        logger.warning("Yahoo Finance returned no company payload for %s", ticker)
+        return {}
+
+    if not isinstance(raw_payload, dict):
+        logger.warning("Yahoo Finance returned non-dict payload for %s", ticker)
+        return {}
+
+    return _map_yfinance_snapshot(ticker, raw_payload)
+
+
+async def get_yfinance_company_info(ticker_ns: str) -> dict[str, Any]:
+    settings = get_settings()
+    ticker = _normalize_yfinance_ticker(ticker_ns)
+    if not ticker:
+        return {}
+
+    try:
+        definition = load_yfinance_server_definition(settings)
+        async with MCPToolClient(definition, timeout_seconds=settings.yfinance_mcp_timeout_seconds) as client:
+            raw_payload = await client.call_tool("get_stock_info", {"ticker": ticker})
+    except Exception as exc:
+        logger.warning("Yahoo Finance company info fetch failed for %s: %s", ticker, exc)
+        return {}
+
+    if isinstance(raw_payload, dict) and "result" in raw_payload:
+        raw_payload = _coerce_json_object(raw_payload["result"])
+    else:
+        raw_payload = _coerce_json_object(raw_payload)
+
+    if _is_missing_company_response(raw_payload) or not isinstance(raw_payload, dict):
+        return {}
+    return raw_payload
+
+
+async def get_macro_context() -> MacroContext:
+    cache_key = datetime.now(timezone.utc).date().isoformat()
+    cached = _MACRO_CONTEXT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    errors: list[str] = []
+    latest_dates: list[str] = []
+
+    async def fetch_part(
+        label: str,
+        fetcher: Any,
+    ) -> tuple[float | None, str | None]:
+        try:
+            result = await fetcher(client)
+            return result
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            return None, None
+
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        try:
+            cpi_task = fetch_part("cpi", _fetch_cpi_context)
+            iip_task = fetch_part("iip", _fetch_iip_context)
+            gdp_task = fetch_part("gdp", _fetch_gdp_context)
+            cpi_result, iip_result, gdp_result = await asyncio.wait_for(
+                asyncio.gather(cpi_task, iip_task, gdp_task),
+                timeout=60,
+            )
+        except TimeoutError:
+            errors.append("macro_context: timed out after 60 seconds")
+            cpi_result = (None, None)
+            iip_result = (None, None)
+            gdp_result = (None, None)
+
+    for _, as_of_date in (cpi_result, iip_result, gdp_result):
+        if as_of_date:
+            latest_dates.append(as_of_date)
+
+    macro_context = MacroContext(
+        cpi_headline_yoy=cpi_result[0],
+        iip_growth_latest=iip_result[0],
+        gdp_growth_latest=gdp_result[0],
+        as_of_date=max(latest_dates) if latest_dates else None,
+        fetch_errors=errors,
+    )
+    _MACRO_CONTEXT_CACHE[cache_key] = macro_context
+    return macro_context
 
 
 def _artifact_path(settings: Settings, *parts: str) -> Path:

@@ -93,6 +93,17 @@ def test_kite_mcp_client_call_tool_applies_timeout() -> None:
         raise AssertionError("Expected ToolExecutionError")
 
 
+def test_kite_mcp_client_ignores_stdio_cancel_scope_shutdown_bug() -> None:
+    class FakeStack:
+        async def aclose(self):
+            raise RuntimeError("Attempted to exit cancel scope in a different task than it was entered in")
+
+    client = KiteMCPClient(MCPServerDefinition("stdio", None, "uvx", [], {}), timeout_seconds=30)
+    client._stack = FakeStack()
+
+    asyncio.run(client.__aexit__(None, None, None))
+
+
 def test_kite_get_price_history_returns_summary_only() -> None:
     result = asyncio.run(
         kite_get_price_history(

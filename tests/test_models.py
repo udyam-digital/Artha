@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from models import AnalystRiskMatrix, Holding, PortfolioReport, PortfolioSnapshot, StockVerdict
+from models import AnalystRiskMatrix, Holding, MacroContext, PortfolioReport, PortfolioSnapshot, StockVerdict
 
 
 def test_holding_validation() -> None:
@@ -52,6 +52,7 @@ def test_portfolio_report_serialization() -> None:
         rebalance_rupees=0.0,
         rebalance_reasoning="Sizing is appropriate.",
         data_sources=["https://example.com"],
+        yfinance_data={"ticker": "HDFCBANK.NS", "cmp": 120.0},
         analysis_duration_seconds=2.5,
         error=None,
     )
@@ -97,3 +98,39 @@ def test_risk_level_normalizes_simple_case_variants() -> None:
     assert AnalystRiskMatrix(risk_level=" high ").risk_level == "High"
     assert AnalystRiskMatrix(risk_level="MEDIUM").risk_level == "Medium"
     assert AnalystRiskMatrix(risk_level="low").risk_level == "Low"
+
+
+def test_macro_context_serialization() -> None:
+    payload = MacroContext(
+        cpi_headline_yoy=4.5,
+        iip_growth_latest=3.2,
+        gdp_growth_latest=6.4,
+        as_of_date="2026-03",
+        fetch_errors=["iip: partial"],
+    )
+    restored = MacroContext.model_validate_json(payload.model_dump_json())
+    assert restored == payload
+
+
+def test_stock_verdict_yfinance_data_defaults_to_empty_dict() -> None:
+    verdict = StockVerdict(
+        tradingsymbol="HDFCBANK",
+        company_name="HDFC Bank",
+        verdict="HOLD",
+        confidence="MEDIUM",
+        current_price=120.0,
+        buy_price=100.0,
+        pnl_pct=20.0,
+        thesis_intact=True,
+        bull_case="Strong franchise.",
+        bear_case="Margin pressure.",
+        what_to_watch="Loan growth",
+        red_flags=[],
+        rebalance_action="HOLD",
+        rebalance_rupees=0.0,
+        rebalance_reasoning="Sizing is appropriate.",
+        data_sources=["https://example.com"],
+        analysis_duration_seconds=2.5,
+        error=None,
+    )
+    assert verdict.yfinance_data == {}

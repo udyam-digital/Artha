@@ -41,6 +41,11 @@ def _mock_judges():
     with (
         patch("analysis.analyst.judge_report_card", new_callable=AsyncMock, return_value=PASSING_QUALITY_SCORES),
         patch("analysis.analyst.judge_factual_grounding", new_callable=AsyncMock, return_value=PASSING_FACTUAL_SCORES),
+        patch(
+            "analysis.analyst.get_yfinance_snapshot",
+            new_callable=AsyncMock,
+            return_value={"ticker": "KPITTECH.NS", "cmp": 80.0, "upside_pct": 10.0},
+        ),
     ):
         yield
 
@@ -222,6 +227,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={"52w_high": 100.0, "52w_low": 60.0, "current_vs_52w_high_pct": -20.0},
+        macro_context="",
         skills_content="system",
         client=FakeAnthropicClient([tool_use_response, final_response]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -241,6 +247,7 @@ async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=client,  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -261,6 +268,7 @@ async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> 
             "price_change_1y_pct": 14.0,
             "candles": [1, 2, 3],
         },
+        macro_context="Macro (as of 2026-03): CPI 4.50% | IIP growth 3.20% | GDP growth 6.40%",
         skills_content="system",
         client=client,  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -273,6 +281,8 @@ async def test_analyse_stock_sends_minimal_portfolio_context(tmp_path: Path) -> 
     assert '"52w_high":100.0' in prompt
     assert '"52w_low":60.0' in prompt
     assert '"current_vs_52w_high_pct":-20.0' in prompt
+    assert '"macro_context":"Macro (as of 2026-03): CPI 4.50% | IIP growth 3.20% | GDP growth 6.40%"' in prompt
+    assert '"yfinance_data":{"ticker":"KPITTECH.NS","cmp":80.0,"upside_pct":10.0}' in prompt
     assert "current_value" not in prompt
     assert "price_1y_ago" not in prompt
     assert "price_change_1y_pct" not in prompt
@@ -290,6 +300,7 @@ async def test_analyse_stock_falls_back_without_tags(tmp_path: Path) -> None:
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=FakeAnthropicClient([ValueError("invalid")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -303,6 +314,7 @@ async def test_analyse_stock_falls_back_on_invalid_json(tmp_path: Path) -> None:
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=FakeAnthropicClient([ValueError("{not-json}")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -322,6 +334,7 @@ async def test_analyse_stock_falls_back_on_invalid_schema(tmp_path: Path) -> Non
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=FakeAnthropicClient([response]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -350,6 +363,7 @@ async def test_analyse_stock_supports_standalone_mode(tmp_path: Path) -> None:
         holding=holding,
         portfolio_total_value=0.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=FakeAnthropicClient([make_final_response("INFY", name="Infosys", final_verdict="HOLD")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -367,6 +381,7 @@ async def test_analyse_stock_rejects_legacy_python_payload(tmp_path: Path) -> No
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=FakeAnthropicClient([ValueError("output = {'stock_snapshot': {}}")]),  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -381,6 +396,7 @@ async def test_analyse_stock_returns_fallback_on_instructor_validation_error(tmp
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=client,  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -408,6 +424,7 @@ async def test_analyse_stock_enforces_tavily_search_budget(tmp_path: Path) -> No
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=client,  # type: ignore[arg-type]
         config=make_settings(tmp_path),
@@ -480,6 +497,7 @@ async def test_analyse_stock_retries_on_low_judge_score(tmp_path: Path) -> None:
             holding=make_holding(),
             portfolio_total_value=10_000.0,
             price_context={},
+            macro_context="",
             skills_content="system",
             client=client,  # type: ignore[arg-type]
             config=settings,
@@ -500,6 +518,7 @@ async def test_analyse_stock_persists_judge_scores(tmp_path: Path) -> None:
         holding=make_holding(),
         portfolio_total_value=10_000.0,
         price_context={},
+        macro_context="",
         skills_content="system",
         client=client,  # type: ignore[arg-type]
         config=make_settings(tmp_path),

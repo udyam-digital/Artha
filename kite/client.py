@@ -8,7 +8,12 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from config import Settings, get_settings
+from config import (
+    DEFAULT_YFINANCE_MCP_ARGS,
+    DEFAULT_YFINANCE_MCP_COMMAND,
+    Settings,
+    get_settings,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -52,14 +57,27 @@ def load_kite_server_definition(settings: Settings | None = None) -> MCPServerDe
     )
 
 
-class KiteMCPClient:
+def load_yfinance_server_definition(settings: Settings | None = None) -> MCPServerDefinition:
+    settings = settings or get_settings()
+    command = settings.yfinance_mcp_command.strip() or DEFAULT_YFINANCE_MCP_COMMAND
+    args = settings.yfinance_mcp_args or list(DEFAULT_YFINANCE_MCP_ARGS)
+    return MCPServerDefinition(
+        transport="stdio",
+        url=None,
+        command=command,
+        args=args,
+        env=settings.yfinance_mcp_env_json,
+    )
+
+
+class MCPToolClient:
     def __init__(self, definition: MCPServerDefinition, timeout_seconds: int = 30):
         self.definition = definition
         self.timeout_seconds = timeout_seconds
         self._stack = AsyncExitStack()
         self._session = None
 
-    async def __aenter__(self) -> "KiteMCPClient":
+    async def __aenter__(self) -> "MCPToolClient":
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
@@ -107,7 +125,10 @@ class KiteMCPClient:
             await self._stack.aclose()
         except Exception as close_exc:
             if self.definition.transport == "http":
-                logger.debug("Ignoring streamable HTTP shutdown bug during Kite MCP close", exc_info=True)
+                logger.debug("Ignoring streamable HTTP shutdown bug during MCP close", exc_info=True)
+                return
+            if "Attempted to exit cancel scope in a different task" in str(close_exc):
+                logger.debug("Ignoring stdio MCP shutdown cancel-scope bug during close", exc_info=True)
                 return
             raise
 
@@ -138,3 +159,7 @@ class KiteMCPClient:
             return json.loads(joined)
         except json.JSONDecodeError:
             return {"raw_text": joined}
+
+
+class KiteMCPClient(MCPToolClient):
+    pass

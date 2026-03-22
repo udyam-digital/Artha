@@ -11,10 +11,24 @@ import application.orchestrator as orchestrator
 from reliability import FullRunFailed, RetryFailure
 from config import Settings
 from kite.runtime import KiteSyncResult
-from models import Holding, MFSnapshot, MFHolding, PortfolioSnapshot, RebalancingAction, StockVerdict
+from models import Holding, MacroContext, MFSnapshot, MFHolding, PortfolioSnapshot, RebalancingAction, StockVerdict
 
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def _mock_macro_context(monkeypatch):
+    async def fake_macro_context():
+        return MacroContext(
+            cpi_headline_yoy=4.5,
+            iip_growth_latest=3.2,
+            gdp_growth_latest=6.4,
+            as_of_date="2026-03",
+            fetch_errors=[],
+        )
+
+    monkeypatch.setattr(orchestrator, "get_macro_context", fake_macro_context)
 
 
 class FakeSummaryClient:
@@ -131,10 +145,11 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
     monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
 
-    state = {"active": 0, "max_active": 0, "symbols": []}
+    state = {"active": 0, "max_active": 0, "symbols": [], "macro_contexts": []}
 
     async def fake_get_company_artifact_and_verdict(**kwargs):
         holding = kwargs["holding"]
+        state["macro_contexts"].append(kwargs["macro_context"])
         state["active"] += 1
         state["max_active"] = max(state["max_active"], state["active"])
         await asyncio.sleep(0)
@@ -195,6 +210,10 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     )
 
     assert set(state["symbols"]) == {"BSE", "KPITTECH"}
+    assert state["macro_contexts"] == [
+        "Macro (as of 2026-03): CPI 4.50% | IIP growth 3.20% | GDP growth 6.40%",
+        "Macro (as of 2026-03): CPI 4.50% | IIP growth 3.20% | GDP growth 6.40%",
+    ]
     assert state["max_active"] <= settings.analyst_parallelism
     assert len(report.verdicts) == 2
     assert [verdict.tradingsymbol for verdict in report.verdicts] == ["BSE", "KPITTECH"]
@@ -219,6 +238,74 @@ async def test_run_full_analysis_excludes_etfs_and_gates_actions(tmp_path: Path,
     assert fake_summary_client.calls[0].get("tools") is None
     assert fake_summary_client.calls[0]["model"] == "claude-sonnet-4-6"
     assert fake_summary_client.count_calls[0]["model"] == "claude-sonnet-4-6"
+
+
+async def test_run_full_analysis_degrades_when_macro_context_fails(tmp_path: Path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    snapshot = PortfolioSnapshot(
+        fetched_at="2026-03-18T10:00:00Z",
+        total_value=10_000.0,
+        available_cash=0.0,
+        holdings=[make_holding("BSE", 8.0, 8.0)],
+    )
+    sync_result = KiteSyncResult(
+        profile={"user_name": "Saksham"},
+        portfolio_snapshot=snapshot,
+        portfolio_artifact=tmp_path / "portfolio.json",
+        mf_snapshot=MFSnapshot(fetched_at="2026-03-18T10:00:00Z", total_value=0.0, holdings=[]),
+        mf_artifact=tmp_path / "mf.json",
+    )
+
+    async def fake_sync_with_client(kite_client, *, settings=None, auto_login=True):
+        return sync_result
+
+    monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
+    monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+    async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
+        return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
+
+    monkeypatch.setattr(orchestrator, "kite_get_price_history", fake_kite_get_price_history)
+
+    async def failing_macro_context():
+        return MacroContext(fetch_errors=["cpi: unavailable", "iip: unavailable", "gdp: unavailable"])
+
+    seen = {"macro_context": None}
+
+    async def fake_get_company_artifact_and_verdict(**kwargs):
+        seen["macro_context"] = kwargs["macro_context"]
+        return (
+            object(),
+            StockVerdict(
+                tradingsymbol="BSE",
+                company_name="BSE Ltd",
+                verdict="HOLD",
+                confidence="MEDIUM",
+                current_price=100.0,
+                buy_price=90.0,
+                pnl_pct=10.0,
+                thesis_intact=True,
+                bull_case="Good franchise.",
+                bear_case="Valuation is rich.",
+                what_to_watch="Volumes",
+                red_flags=[],
+                rebalance_action="HOLD",
+                rebalance_rupees=0.0,
+                rebalance_reasoning="No action.",
+                data_sources=["https://example.com/bse"],
+                analysis_duration_seconds=1.0,
+                error=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(orchestrator, "get_macro_context", failing_macro_context)
+    monkeypatch.setattr(orchestrator, "get_company_artifact_and_verdict", fake_get_company_artifact_and_verdict)
+    monkeypatch.setattr(orchestrator, "AsyncAnthropic", lambda api_key: FakeSummaryClient())
+
+    report = await orchestrator.run_full_analysis(settings)
+
+    assert seen["macro_context"] == ""
+    assert report.errors == ["cpi: unavailable", "iip: unavailable", "gdp: unavailable"]
 
 
 async def test_run_full_analysis_reuses_fresh_company_cache(tmp_path: Path, monkeypatch) -> None:

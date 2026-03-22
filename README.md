@@ -37,6 +37,15 @@ KITE_MCP_TIMEOUT_SECONDS=30
 KITE_DATA_DIR=./data/kite
 ```
 
+Optional Yahoo Finance MCP runtime for analyst enrichment:
+
+```bash
+YFINANCE_MCP_COMMAND=uvx
+YFINANCE_MCP_ARGS=["--from","git+https://github.com/richin13/yahoo-finance-mcp","yahoo-finance-mcp"]
+YFINANCE_MCP_ENV_JSON={}
+YFINANCE_MCP_TIMEOUT_SECONDS=30
+```
+
 Model routing in `.env`:
 
 ```bash
@@ -99,6 +108,7 @@ Supported flows:
 - `kite-sync`: fetch fresh equity and MF snapshots and persist them locally
 - `rebalance`: generate a math-only rebalancing report from the latest saved local equity snapshot, with no LLM call
 - `run`: reuses today's saved Kite equity and MF snapshots if they already exist locally; otherwise it performs one fresh Kite sync for the day, persists the snapshots locally, reuses fresh company-analysis artifacts from `data/kite/companies/` where possible, refreshes stale or missing company analysis on Claude Haiku, converts artifacts into rebalancing verdicts, and synthesizes a final portfolio report on Claude Sonnet. If the full run still fails after bounded transient retries, it aborts immediately and writes a structured failure log.
+- company analysis now includes a compact Yahoo Finance snapshot and one shared MoSPI macro summary per run; both are best-effort enrichments and never enable trade execution
 - `run --ticker KPITTECH`: runs the same cache-backed company-analysis pipeline Artha uses, then emits a one-stock `PortfolioReport` and saves/refreshes `data/kite/companies/KPITTECH.json` as needed
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Tavily-backed `tavily_search`, saves one file per holding, and writes a combined digest
@@ -138,11 +148,12 @@ Observability and tracing:
    If today's snapshots already exist locally, reuse them and skip a fresh hosted Kite login/sync
 2. Exclude `LIQUIDBEES`, `NIFTYBEES`, `GOLDCASE`, and `SILVERCASE` from analyst fan-out while still keeping them in portfolio totals
 3. Fetch one compact price-history summary once per analyzable equity holding: `52w_high`, `52w_low`, `current_vs_52w_high_pct`, `price_1y_ago`, `price_change_1y_pct`
-4. Check `data/kite/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
-5. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and Tavily-backed `tavily_search`, using Instructor-enforced structured output plus compact analyst input payloads, staggered starts, and a sliding token budget to stay within provider TPM limits
-6. Convert each cached or refreshed company artifact into a normalized Artha verdict
-7. Merge analyst verdicts with deterministic drift math to produce final action fields
-8. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
+4. Fetch one shared best-effort macro context from MoSPI for CPI, IIP, and GDP growth and inject the compact summary into every analyst call
+5. Check `data/kite/companies/{ticker}.json` first for each analyzable holding and reuse it if the artifact is valid and no older than `COMPANY_ANALYSIS_MAX_AGE_DAYS`
+6. Refresh only missing, invalid, or stale company artifacts with Claude Haiku and Tavily-backed `tavily_search`, using Instructor-enforced structured output plus compact analyst input payloads, Yahoo Finance snapshot enrichment, staggered starts, and a sliding token budget to stay within provider TPM limits
+7. Convert each cached or refreshed company artifact into a normalized Artha verdict
+8. Merge analyst verdicts with deterministic drift math to produce final action fields
+9. Run one short no-tool synthesis call on Claude Sonnet for the final portfolio summary
 
 MF holdings are saved and surfaced informationally, but they are never analyzed as stocks and never included in equity rebalancing math.
 
@@ -163,6 +174,7 @@ Each verdict is a `StockVerdict` with:
 - `confidence`: `HIGH | MEDIUM | LOW`
 - `thesis_intact`, bull/bear cases, watch item, red flags
 - market fields: current price, buy price, P&L%
+- optional `yfinance_data` for flat market-metric enrichment
 - final rebalance action, rupee sizing, and reasoning
 - source URLs from the saved analyst report card, duration, and optional error
 

@@ -63,6 +63,32 @@ class AnalystStockSnapshot(StrictModel):
     time_horizon: Literal["Compounder", "Cyclical", "Tactical"]
 
 
+class MacroContext(StrictModel):
+    cpi_headline_yoy: float | None = None
+    iip_growth_latest: float | None = None
+    gdp_growth_latest: float | None = None
+    as_of_date: str | None = None
+    fetch_errors: list[str] = Field(default_factory=list)
+
+
+class AnalystInputPayload(StrictModel):
+    tradingsymbol: str
+    exchange: str
+    quantity: int
+    average_price: float
+    last_price: float
+    pnl: float
+    pnl_pct: float
+    current_weight_pct: float
+    target_weight_pct: float
+    drift: float
+    high_52w: float | str = Field(alias="52w_high")
+    low_52w: float | str = Field(alias="52w_low")
+    current_vs_52w_high_pct: float | str
+    macro_context: str = ""
+    yfinance_data: dict[str, object] = Field(default_factory=dict)
+
+
 class AnalystThesis(StrictModel):
     core_idea: str
     growth_driver: str
@@ -174,6 +200,7 @@ class CompanyAnalysisArtifact(StrictModel):
     exchange: str
     ticker: str
     report_card: AnalystReportCard
+    yfinance_data: dict[str, object] = Field(default_factory=dict)
 
 
 class Verdict(str, Enum):
@@ -201,6 +228,7 @@ class StockVerdict(StrictModel):
     rebalance_rupees: float
     rebalance_reasoning: str
     data_sources: list[str] = Field(default_factory=list)
+    yfinance_data: dict[str, object] = Field(default_factory=dict)
     analysis_duration_seconds: float
     error: str | None = None
 
