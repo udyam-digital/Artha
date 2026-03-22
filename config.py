@@ -19,6 +19,9 @@ DEFAULT_YFINANCE_MCP_ARGS = [
     "git+https://github.com/richin13/yahoo-finance-mcp",
     "yahoo-finance-mcp",
 ]
+DEFAULT_NSE_MCP_COMMAND = "npx"
+DEFAULT_NSE_MCP_ARGS = ["stock-nse-india", "mcp"]
+DEFAULT_NSE_MCP_ENV_JSON = {"NODE_ENV": "production"}
 
 
 class Settings(BaseSettings):
@@ -64,6 +67,10 @@ class Settings(BaseSettings):
     yfinance_mcp_args: list[str] = Field(default_factory=lambda: list(DEFAULT_YFINANCE_MCP_ARGS), alias="YFINANCE_MCP_ARGS")
     yfinance_mcp_env_json: dict[str, str] = Field(default_factory=dict, alias="YFINANCE_MCP_ENV_JSON")
     yfinance_mcp_timeout_seconds: int = Field(default=30, alias="YFINANCE_MCP_TIMEOUT_SECONDS")
+    nse_mcp_command: str = Field(default=DEFAULT_NSE_MCP_COMMAND, alias="NSE_MCP_COMMAND")
+    nse_mcp_args: list[str] = Field(default_factory=lambda: list(DEFAULT_NSE_MCP_ARGS), alias="NSE_MCP_ARGS")
+    nse_mcp_env_json: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_NSE_MCP_ENV_JSON), alias="NSE_MCP_ENV_JSON")
+    nse_mcp_timeout_seconds: int = Field(default=30, alias="NSE_MCP_TIMEOUT_SECONDS")
     kite_data_dir: Path = Field(default=ROOT_DIR / "data" / "kite", alias="KITE_DATA_DIR")
     kite_login_timeout_seconds: int = Field(default=180, alias="KITE_LOGIN_TIMEOUT_SECONDS")
     kite_login_poll_interval_seconds: int = Field(default=3, alias="KITE_LOGIN_POLL_INTERVAL_SECONDS")
@@ -122,7 +129,15 @@ class Settings(BaseSettings):
         command = str(value).strip()
         return command or DEFAULT_YFINANCE_MCP_COMMAND
 
-    @field_validator("kite_mcp_args", "yfinance_mcp_args", mode="before")
+    @field_validator("nse_mcp_command", mode="before")
+    @classmethod
+    def parse_nse_mcp_command(cls, value: object) -> str:
+        if value is None:
+            return DEFAULT_NSE_MCP_COMMAND
+        command = str(value).strip()
+        return command or DEFAULT_NSE_MCP_COMMAND
+
+    @field_validator("kite_mcp_args", "yfinance_mcp_args", "nse_mcp_args", mode="before")
     @classmethod
     def parse_mcp_args(cls, value: object) -> list[str]:
         if value in (None, "", []):
@@ -133,13 +148,13 @@ class Settings(BaseSettings):
             try:
                 parsed = loads(value)
             except JSONDecodeError as exc:
-                raise ValueError("KITE_MCP_ARGS must be a JSON array string.") from exc
+                raise ValueError("MCP args must be a JSON array string.") from exc
             if not isinstance(parsed, list):
-                raise ValueError("KITE_MCP_ARGS must decode to a list.")
+                raise ValueError("MCP args must decode to a list.")
             return [str(item) for item in parsed]
-        raise ValueError("KITE_MCP_ARGS must be a list or JSON array string.")
+        raise ValueError("MCP args must be a list or JSON array string.")
 
-    @field_validator("kite_mcp_env_json", "yfinance_mcp_env_json", mode="before")
+    @field_validator("kite_mcp_env_json", "yfinance_mcp_env_json", "nse_mcp_env_json", mode="before")
     @classmethod
     def parse_mcp_env_json(cls, value: object) -> dict[str, str]:
         if value in (None, "", {}):
@@ -150,11 +165,11 @@ class Settings(BaseSettings):
             try:
                 parsed = loads(value)
             except JSONDecodeError as exc:
-                raise ValueError("KITE_MCP_ENV_JSON must be a JSON object string.") from exc
+                raise ValueError("MCP env json must be a JSON object string.") from exc
             if not isinstance(parsed, dict):
-                raise ValueError("KITE_MCP_ENV_JSON must decode to an object.")
+                raise ValueError("MCP env json must decode to an object.")
             return {str(key): str(val) for key, val in parsed.items()}
-        raise ValueError("KITE_MCP_ENV_JSON must be a dict or JSON object string.")
+        raise ValueError("MCP env json must be a dict or JSON object string.")
 
     @field_validator("otel_exporter_otlp_headers", mode="before")
     @classmethod

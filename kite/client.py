@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from config import (
+    DEFAULT_NSE_MCP_ARGS,
+    DEFAULT_NSE_MCP_COMMAND,
     DEFAULT_YFINANCE_MCP_ARGS,
     DEFAULT_YFINANCE_MCP_COMMAND,
     Settings,
@@ -67,6 +69,19 @@ def load_yfinance_server_definition(settings: Settings | None = None) -> MCPServ
         command=command,
         args=args,
         env=settings.yfinance_mcp_env_json,
+    )
+
+
+def load_nse_server_definition(settings: Settings | None = None) -> MCPServerDefinition:
+    settings = settings or get_settings()
+    command = settings.nse_mcp_command.strip() or DEFAULT_NSE_MCP_COMMAND
+    args = settings.nse_mcp_args or list(DEFAULT_NSE_MCP_ARGS)
+    return MCPServerDefinition(
+        transport="stdio",
+        url=None,
+        command=command,
+        args=args,
+        env=settings.nse_mcp_env_json,
     )
 
 

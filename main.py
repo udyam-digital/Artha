@@ -7,10 +7,11 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from anthropic import AsyncAnthropic
 
-from analysis import generate_yfinance_only_company_artifact
+from analysis import export_provider_comparison_files, generate_yfinance_only_company_artifact
 from application.orchestrator import (
     RunEvent,
     build_rebalance_only_report,
@@ -155,15 +156,18 @@ def print_single_verdict(verdict: StockVerdict) -> None:
         print(f"Error:                {verdict.error}")
 
 
-def print_company_artifact(artifact: CompanyAnalysisArtifact) -> None:
+def print_company_artifact(artifact: Any) -> None:
     print("ANALYST REPORT CARD")
-    print(f"Stock:                {artifact.ticker} ({artifact.report_card.stock_snapshot.name})")
-    print(f"Verdict:              {artifact.report_card.final_verdict.verdict}")
-    print(f"Confidence:           {artifact.report_card.final_verdict.confidence}")
-    print(f"Sector:               {artifact.report_card.stock_snapshot.sector}")
-    print(f"Current Price:        {format_rupees(artifact.report_card.stock_snapshot.current_price)}")
-    print(f"YFinance Fields:      {', '.join(sorted(artifact.yfinance_data)) if artifact.yfinance_data else 'None'}")
-    print(f"Sources:              {len(artifact.report_card.data_sources)}")
+    # Support both CompanyDataCard (new) and CompanyAnalysisArtifact (legacy)
+    rc = artifact.analysis if hasattr(artifact, "analysis") else artifact.report_card
+    yf_data = artifact.yfinance_data if hasattr(artifact, "yfinance_data") else {}
+    print(f"Stock:                {artifact.ticker} ({rc.stock_snapshot.name})")
+    print(f"Verdict:              {rc.final_verdict.verdict}")
+    print(f"Confidence:           {rc.final_verdict.confidence}")
+    print(f"Sector:               {rc.stock_snapshot.sector}")
+    print(f"Current Price:        {format_rupees(rc.stock_snapshot.current_price)}")
+    print(f"YFinance Fields:      {', '.join(sorted(yf_data)) if yf_data else 'None'}")
+    print(f"Sources:              {len(rc.data_sources)}")
     print()
     print(artifact.model_dump_json(indent=2, by_alias=True))
 
@@ -400,6 +404,19 @@ async def handle_analyst(args: argparse.Namespace) -> int:
     return 0
 
 
+async def handle_compare_providers(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    paths = await export_provider_comparison_files(
+        args.ticker,
+        exchange=args.exchange,
+        config=settings,
+    )
+    print(f"Provider comparison files for {args.ticker.upper()} (Yahoo Finance + NSE India):")
+    for path in paths:
+        print(path)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Artha portfolio research and rebalancing agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -417,6 +434,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyst_parser = subparsers.add_parser("analyst", help="Run one standalone analyst report card without Kite or Artha summary")
     analyst_parser.add_argument("--ticker", required=True, help="Ticker to analyse")
     analyst_parser.add_argument("--exchange", default="NSE", help="Exchange for standalone analyst mode, default NSE")
+    compare_parser = subparsers.add_parser("compare-providers", help="Fetch Yahoo Finance and NSE India data into separate JSON files")
+    compare_parser.add_argument("--ticker", required=True, help="Ticker to fetch")
+    compare_parser.add_argument("--exchange", default="NSE", help="Exchange suffix for Alpha Vantage, default NSE")
     subparsers.add_parser("kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot")
     subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
     subparsers.add_parser("rebalance", help="Generate a rebalancing report from the latest saved local equity snapshot")
@@ -440,6 +460,8 @@ async def async_main() -> int:
             return await handle_holdings()
         if args.command == "analyst":
             return await handle_analyst(args)
+        if args.command == "compare-providers":
+            return await handle_compare_providers(args)
         if args.command == "kite-login":
             return await handle_kite_login()
         if args.command == "kite-sync":

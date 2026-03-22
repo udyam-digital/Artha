@@ -10,7 +10,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from config import Settings, get_settings
-from models import CompanyAnalysisArtifact, MFSnapshot, PortfolioReport, PortfolioSnapshot, ResearchDigest
+from models import CompanyAnalysisArtifact, CompanyDataCard, MFSnapshot, PortfolioReport, PortfolioSnapshot, ResearchDigest
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -169,7 +169,7 @@ def company_analysis_path(ticker: str, settings: Settings | None = None) -> Path
 
 
 def save_company_analysis_artifact(
-    artifact: CompanyAnalysisArtifact,
+    artifact: CompanyDataCard | CompanyAnalysisArtifact,
     settings: Settings | None = None,
 ) -> Path:
     path = company_analysis_path(artifact.ticker, settings=settings)
@@ -180,11 +180,18 @@ def save_company_analysis_artifact(
 def load_company_analysis_artifact(
     ticker: str,
     settings: Settings | None = None,
-) -> CompanyAnalysisArtifact:
+) -> CompanyDataCard | CompanyAnalysisArtifact:
     path = company_analysis_path(ticker, settings=settings)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    migrated = False
 
+    # Try CompanyDataCard first (new format)
+    try:
+        return CompanyDataCard.model_validate(payload)
+    except Exception:
+        pass
+
+    # Fall back to CompanyAnalysisArtifact (old format) with migration
+    migrated = False
     stock_snapshot = payload.get("report_card", {}).get("stock_snapshot", {})
     if isinstance(stock_snapshot, dict):
         if "high_52w" in stock_snapshot and "52w_high" not in stock_snapshot:

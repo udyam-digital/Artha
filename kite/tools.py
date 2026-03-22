@@ -12,7 +12,13 @@ from typing import Any
 import httpx
 
 from config import Settings, get_settings
-from kite.client import MCPToolClient, KiteMCPClient, ToolExecutionError, load_yfinance_server_definition
+from kite.client import (
+    MCPToolClient,
+    KiteMCPClient,
+    ToolExecutionError,
+    load_nse_server_definition,
+    load_yfinance_server_definition,
+)
 from models import Holding, MFHolding, MFSnapshot, MacroContext, PortfolioSnapshot
 from rebalance import PASSIVE_INSTRUMENTS
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
@@ -149,6 +155,16 @@ def _coerce_json_object(payload: Any) -> Any:
         except json.JSONDecodeError:
             return payload
     return payload
+
+
+def _unwrap_tool_payload(payload: Any) -> Any:
+    current = payload
+    for _ in range(3):
+        if isinstance(current, dict) and "result" in current and len(current) == 1:
+            current = current["result"]
+            continue
+        break
+    return _coerce_json_object(current)
 
 
 def _extract_mospi_records(payload: Any) -> list[dict[str, Any]]:
@@ -661,6 +677,94 @@ async def get_yfinance_company_info(ticker_ns: str) -> dict[str, Any]:
     if _is_missing_company_response(raw_payload) or not isinstance(raw_payload, dict):
         return {}
     return raw_payload
+
+
+async def get_yfinance_provider_payload(ticker_ns: str) -> dict[str, Any]:
+    ticker = _normalize_yfinance_ticker(ticker_ns)
+    raw_company_info = await get_yfinance_company_info(ticker_ns)
+    snapshot = await get_yfinance_snapshot(ticker_ns)
+    errors: list[str] = []
+    if not raw_company_info:
+        errors.append("raw company info unavailable")
+    if not snapshot:
+        errors.append("flat snapshot unavailable")
+    return {
+        "provider": "yfinance",
+        "requested_ticker": str(ticker_ns).strip().upper(),
+        "provider_symbol": ticker,
+        "snapshot": snapshot,
+        "raw": raw_company_info,
+        "errors": errors,
+    }
+
+
+async def get_nse_india_provider_payload(ticker: str) -> dict[str, Any]:
+    settings = get_settings()
+    normalized_ticker = str(ticker).strip().upper()
+    result: dict[str, Any] = {
+        "provider": "nse_india",
+        "requested_ticker": normalized_ticker,
+        "provider_symbol": normalized_ticker,
+        "snapshot": {},
+        "raw": {},
+        "errors": [],
+    }
+    if not normalized_ticker:
+        result["errors"].append("blank ticker")
+        return result
+
+    try:
+        definition = load_nse_server_definition(settings)
+        async with MCPToolClient(definition, timeout_seconds=settings.nse_mcp_timeout_seconds) as client:
+            tool_specs = (
+                ("details", "get_equity_details", {"symbol": normalized_ticker}),
+                ("trade_info", "get_equity_trade_info", {"symbol": normalized_ticker}),
+                ("corporate_info", "get_equity_corporate_info", {"symbol": normalized_ticker}),
+            )
+            for label, tool_name, arguments in tool_specs:
+                try:
+                    payload = await client.call_tool(tool_name, arguments)
+                    result["raw"][label] = _unwrap_tool_payload(payload)
+                except Exception as exc:
+                    result["raw"][label] = {}
+                    result["errors"].append(f"{label}: {exc}")
+    except Exception as exc:
+        logger.warning("NSE India provider fetch failed for %s: %s", normalized_ticker, exc)
+        result["errors"].append(str(exc))
+        return result
+
+    details = result["raw"].get("details") if isinstance(result["raw"], dict) else {}
+    trade_info = result["raw"].get("trade_info") if isinstance(result["raw"], dict) else {}
+    if not isinstance(details, dict):
+        details = {}
+    if not isinstance(trade_info, dict):
+        trade_info = {}
+
+    info = details.get("info") if isinstance(details.get("info"), dict) else {}
+    price_info = details.get("priceInfo") if isinstance(details.get("priceInfo"), dict) else {}
+    metadata = details.get("metadata") if isinstance(details.get("metadata"), dict) else {}
+    security_info = details.get("securityInfo") if isinstance(details.get("securityInfo"), dict) else {}
+    market_book = trade_info.get("marketDeptOrderBook") if isinstance(trade_info.get("marketDeptOrderBook"), dict) else {}
+
+    result["snapshot"] = {
+        "company_name": info.get("companyName") or info.get("symbol") or normalized_ticker,
+        "industry": info.get("industry"),
+        "sector": security_info.get("boardStatus"),
+        "last_price": _coerce_optional_float(price_info.get("lastPrice") or price_info.get("lastPriceDisplay")),
+        "previous_close": _coerce_optional_float(price_info.get("previousClose")),
+        "day_high": _coerce_optional_float(price_info.get("intraDayHighLow", {}).get("max") if isinstance(price_info.get("intraDayHighLow"), dict) else None),
+        "day_low": _coerce_optional_float(price_info.get("intraDayHighLow", {}).get("min") if isinstance(price_info.get("intraDayHighLow"), dict) else None),
+        "fifty_two_week_high": _coerce_optional_float(price_info.get("weekHighLow", {}).get("max") if isinstance(price_info.get("weekHighLow"), dict) else None),
+        "fifty_two_week_low": _coerce_optional_float(price_info.get("weekHighLow", {}).get("min") if isinstance(price_info.get("weekHighLow"), dict) else None),
+        "market_cap": _coerce_optional_float(metadata.get("marketCap")),
+        "listing_date": metadata.get("listingDate"),
+        "is_fno": info.get("isFNOSec"),
+        "active_series": metadata.get("activeSeries"),
+        "delivery_to_traded_qty": _coerce_optional_float(security_info.get("delivToTradedQty")),
+        "total_traded_volume": _coerce_optional_float(market_book.get("totalTradedVolume")),
+        "total_traded_value": _coerce_optional_float(market_book.get("totalTradedValue")),
+    }
+    return result
 
 
 async def get_macro_context() -> MacroContext:

@@ -46,6 +46,15 @@ YFINANCE_MCP_ENV_JSON={}
 YFINANCE_MCP_TIMEOUT_SECONDS=30
 ```
 
+Optional NSE India provider runtime for side-by-side market-data comparison:
+
+```bash
+NSE_MCP_COMMAND=npx
+NSE_MCP_ARGS=["stock-nse-india","mcp"]
+NSE_MCP_ENV_JSON={"NODE_ENV":"production"}
+NSE_MCP_TIMEOUT_SECONDS=30
+```
+
 Model routing in `.env`:
 
 ```bash
@@ -99,6 +108,8 @@ Start the API server:
 .venv/bin/python main.py run --rebalance-only
 .venv/bin/python main.py research
 .venv/bin/python main.py holdings
+.venv/bin/python main.py analyst --ticker BSE
+.venv/bin/python main.py compare-providers --ticker BSE
 .venv/bin/python main.py usage-report --last 10
 ```
 
@@ -113,6 +124,8 @@ Supported flows:
 - `run --rebalance-only`: checks Kite session, fetches fresh snapshots, and computes equity-only rebalancing actions
 - `research`: reads the latest saved equity and MF snapshots, runs one deep-research sub-agent per holding with Tavily-backed `tavily_search`, saves one file per holding, and writes a combined digest
 - `holdings`: checks Kite session, fetches fresh snapshots, and prints the latest equity holdings table
+- `analyst --ticker BSE`: runs the standalone Yahoo Finance-backed analyst path only, without Kite sync or portfolio synthesis
+- `compare-providers --ticker BSE`: fetches provider-specific data from Yahoo Finance and NSE India and writes two separate JSON files under `data/kite/provider_compare/`
 - `usage-report --last 10`: prints recent historical run summaries from the persistent run ledger
 
 Dashboard API endpoints:
@@ -201,6 +214,7 @@ Data layout:
 - `data/kite/portfolio/`: latest and historical equity snapshots
 - `data/kite/mf/`: latest and historical MF snapshots
 - `data/kite/companies/`: per-company cached company-analysis artifacts
+- `data/kite/provider_compare/`: side-by-side provider comparison files such as `BSE_yfinance.json` and `BSE_nse_india.json`
 - `data/console_exports/`: local notes and reference exports
 - `reports/`: portfolio reports
 - `reports/research/`: per-holding research files, combined digest, and index artifacts

@@ -3,7 +3,13 @@ from types import ModuleType
 from pathlib import Path
 
 from config import Settings
-from kite.client import KiteMCPClient, MCPServerDefinition, ToolExecutionError, load_kite_server_definition
+from kite.client import (
+    KiteMCPClient,
+    MCPServerDefinition,
+    ToolExecutionError,
+    load_kite_server_definition,
+    load_nse_server_definition,
+)
 from kite.tools import _holding_market_value, extract_auth_url, kite_get_price_history, profile_requires_login, save_kite_artifact
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
@@ -32,6 +38,17 @@ def test_missing_kite_mcp_config_uses_hosted_default() -> None:
         command="",
         args=[],
         env={},
+    )
+
+
+def test_load_nse_server_definition_uses_defaults() -> None:
+    settings = Settings(ANTHROPIC_API_KEY="test-key")
+    assert load_nse_server_definition(settings) == MCPServerDefinition(
+        transport="stdio",
+        url=None,
+        command="npx",
+        args=["stock-nse-india", "mcp"],
+        env={"NODE_ENV": "production"},
     )
 
 

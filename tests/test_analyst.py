@@ -37,7 +37,7 @@ PASSING_FACTUAL_SCORES = {
 
 @pytest.fixture(autouse=True)
 def _mock_judges():
-    """Mock both judge functions so tests don't need extra LLM responses."""
+    """Mock both judge functions and data provider functions so tests don't need extra LLM responses."""
     with (
         patch("analysis.analyst.judge_report_card", new_callable=AsyncMock, return_value=PASSING_QUALITY_SCORES),
         patch("analysis.analyst.judge_factual_grounding", new_callable=AsyncMock, return_value=PASSING_FACTUAL_SCORES),
@@ -45,6 +45,16 @@ def _mock_judges():
             "analysis.analyst.get_yfinance_snapshot",
             new_callable=AsyncMock,
             return_value={"ticker": "KPITTECH.NS", "cmp": 80.0, "upside_pct": 10.0},
+        ),
+        patch(
+            "analysis.analyst.get_yfinance_company_info",
+            new_callable=AsyncMock,
+            return_value={"currentPrice": 80.0, "trailingPE": 25.0},
+        ),
+        patch(
+            "analysis.analyst.get_nse_india_provider_payload",
+            new_callable=AsyncMock,
+            return_value={"raw": {}, "snapshot": {}, "errors": []},
         ),
     ):
         yield

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import instructor
@@ -13,8 +15,14 @@ from analysis.fiscal import get_fiscal_context
 from analysis.judge import judge_factual_grounding, judge_report_card
 from observability.langfuse_client import get_langfuse, score_active_trace
 from config import Settings
-from kite.tools import get_yfinance_company_info, get_yfinance_snapshot
-from models import AnalystInputPayload, AnalystReportCard, CompanyAnalysisArtifact, Holding, StockVerdict
+from kite.tools import (
+    get_nse_india_provider_payload,
+    get_yfinance_company_info,
+    get_yfinance_provider_payload,
+    get_yfinance_snapshot,
+)
+from analysis.data_card import build_company_data_card
+from models import AnalystInputPayload, AnalystReportCard, CompanyAnalysisArtifact, CompanyDataCard, Holding, StockVerdict
 from observability.usage import count_input_tokens_exact, estimate_input_tokens, log_estimated_input_tokens, record_anthropic_usage
 from persistence.store import save_company_analysis_artifact, save_judge_scores
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
@@ -140,9 +148,9 @@ REQUIRED_SOURCE_MAP_KEYS = [
 
 
 def _is_valid_source_map_value(value: str) -> bool:
-    """Check if a source_map value is a URL or 'Not available' (not a data value)."""
+    """Check if a source_map value is a URL, 'Not available', or a known API provider."""
     v = value.strip()
-    return v.startswith("http") or v.lower() == "not available"
+    return v.startswith("http") or v.lower() in ("not available", "yfinance api", "nse india api")
 
 
 def _normalize_source_map_keys(source_map: dict[str, str]) -> dict[str, str]:
@@ -331,11 +339,11 @@ def _derive_red_flags(report_card: AnalystReportCard) -> list[str]:
 
 def _report_card_to_stock_verdict(
     *,
-    artifact: CompanyAnalysisArtifact,
+    artifact: CompanyDataCard | CompanyAnalysisArtifact,
     holding: Holding,
     duration_seconds: float,
 ) -> StockVerdict:
-    report_card = artifact.report_card
+    report_card = artifact.analysis if isinstance(artifact, CompanyDataCard) else artifact.report_card
     final_signal = report_card.final_verdict.verdict
     what_to_watch = (
         report_card.monitoring.key_metrics[0]
@@ -368,7 +376,7 @@ def _report_card_to_stock_verdict(
             f"and risk level {report_card.risk_matrix.risk_level.lower()}."
         ),
         data_sources=report_card.data_sources,
-        yfinance_data=artifact.yfinance_data,
+        yfinance_data=artifact.yfinance_data if isinstance(artifact, CompanyAnalysisArtifact) else {},
         analysis_duration_seconds=duration_seconds,
         error=None,
     )
@@ -597,6 +605,43 @@ def _fix_internal_consistency(report_card: AnalystReportCard) -> AnalystReportCa
     return report_card
 
 
+DATA_CARD_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
+    "pe":             ("valuation",     "trailing_pe",          "yfinance API"),
+    "roe":            ("quality",       "roe_proxy_pct",        "yfinance API"),
+    "roce":           ("quality",       "roce_proxy_pct",       "yfinance API"),
+    "debt_to_equity": ("financials",    "debt_to_equity",       "yfinance API"),
+    "peg":            ("valuation",     "peg_ratio",            "yfinance API"),
+    "revenue_cagr":   ("nse_quarterly", "revenue_yoy_pct",      "NSE India API"),
+    "eps_cagr":       ("nse_quarterly", "eps_qoq_pct",          "NSE India API"),
+    "fcf_yield":      ("financials",    "ebitda_margin_pct",    "yfinance API"),
+    "analyst_target": ("valuation",     "analyst_target_mean",  "yfinance API"),
+    "market_share":   ("meta",          "index_memberships",    "NSE India API"),
+}
+
+
+def _inject_data_card_sources(
+    report_card: AnalystReportCard,
+    data_card_sections: dict,
+) -> AnalystReportCard:
+    """Fill 'Not available' source_map entries with API provider name when data card has a value."""
+    for metric_key, (section, field, provider) in DATA_CARD_SOURCE_MAP.items():
+        current_value = report_card.source_map.get(metric_key, "Not available")
+        if current_value.strip().lower() not in ("not available", ""):
+            continue  # already has a real source
+        section_data = data_card_sections.get(section)
+        if not isinstance(section_data, dict):
+            continue
+        field_value = section_data.get(field)
+        # For list fields (like index_memberships), check non-empty list
+        if isinstance(field_value, list):
+            has_value = len(field_value) > 0
+        else:
+            has_value = field_value is not None
+        if has_value:
+            report_card.source_map[metric_key] = provider
+    return report_card
+
+
 def _build_company_artifact(
     *,
     report_card: AnalystReportCard,
@@ -611,6 +656,25 @@ def _build_company_artifact(
         ticker=holding.tradingsymbol.upper(),
         report_card=report_card,
         yfinance_data=yfinance_data or {},
+    )
+
+
+def _build_company_data_card_artifact(
+    *,
+    report_card: AnalystReportCard,
+    holding: Holding,
+    config: Settings,
+    data_card_sections: dict,
+    macro_context: str = "",
+) -> CompanyDataCard:
+    return CompanyDataCard(
+        generated_at=datetime.now(timezone.utc),
+        source_model=config.analyst_model,
+        exchange=holding.exchange,
+        ticker=holding.tradingsymbol.upper(),
+        macro_context=macro_context,
+        analysis=report_card,
+        **data_card_sections,
     )
 
 
@@ -634,7 +698,7 @@ async def generate_company_artifact(
     config: Settings,
     _retries_remaining: int | None = None,
     _retry_context: str | None = None,
-) -> CompanyAnalysisArtifact:
+) -> CompanyDataCard:
     started = time.perf_counter()
     logger.info("[%s] starting analysis", holding.tradingsymbol)
 
@@ -664,7 +728,26 @@ async def generate_company_artifact(
     instructor_client = _ensure_instructor_client(client, api_key=config.anthropic_api_key)
     raw_client = _raw_client_for_counting(instructor_client)
     tools = [get_tavily_search_tool_definition(config)]
+
+    # Fetch yfinance raw + NSE India data in parallel
+    yf_raw, nse_provider = await asyncio.gather(
+        get_yfinance_company_info(holding.tradingsymbol),
+        get_nse_india_provider_payload(holding.tradingsymbol),
+    )
+    yf_raw = yf_raw or {}
+    nse_raw = nse_provider.get("raw", {}) if isinstance(nse_provider, dict) else {}
+
+    # Also get the flat snapshot for backward compat (used in verdict yfinance_data field)
     yfinance_data = await get_yfinance_snapshot(holding.tradingsymbol)
+
+    # Build data card sections (Python math, no LLM)
+    data_card_sections = build_company_data_card(
+        ticker=holding.tradingsymbol,
+        exchange=holding.exchange,
+        yf_raw=yf_raw,
+        nse_raw=nse_raw,
+        price_context=price_context,
+    )
 
     fiscal = get_fiscal_context()
     analyst_input = AnalystInputPayload(
@@ -691,17 +774,19 @@ async def generate_company_artifact(
         f"Latest published quarter: {fiscal['latest_quarter']}. "
         f"Current period: {fiscal['current_quarter']}.\n\n"
         f"Run exactly {config.analyst_max_searches} tavily_search calls in this order:\n"
-        f"  1. '{holding.tradingsymbol} {fiscal['latest_quarter']} quarterly results earnings revenue profit'\n"
-        f"  2. '{holding.tradingsymbol} ROCE ROE debt equity PE ratio screener.in {fiscal['current_fy']}'\n"
-        f"  3. '{holding.tradingsymbol} risks competitor outlook management commentary {fiscal['current_fy']}'\n"
-        f"  4. '{holding.tradingsymbol} analyst target price consensus buy sell hold rating {fiscal['current_fy']}'\n\n"
+        f"  1. '{holding.tradingsymbol} {fiscal['latest_quarter']} quarterly results management commentary guidance'\n"
+        f"  2. '{holding.tradingsymbol} management quality competitive moat market share {fiscal['current_fy']}'\n"
+        f"  3. '{holding.tradingsymbol} risks regulatory sector outlook {fiscal['current_fy']}'\n"
+        f"  4. '{holding.tradingsymbol} analyst target price consensus rating {fiscal['current_fy']}'\n\n"
         "Capture the exact URL from every search result you use — add them all to data_sources.\n"
         "Fill all 12 source_map keys: revenue_cagr, eps_cagr, roce, roe, pe, peg, fcf_yield, debt_to_equity, fair_value, risk_1, analyst_target, market_share.\n"
         "source_map values MUST be URLs (https://...) or 'Not available'. NEVER put data values in source_map.\n"
         "NEVER cite a 5-year or 3-year historical CAGR. Use only the latest 1-2 quarters YoY trend.\n"
         "eps_cagr MUST be per-share EPS, NOT absolute net profit in crores.\n"
         "Return exactly one valid JSON object. No markdown fences. No text outside the JSON.\n\n"
-        "Input JSON:\n"
+        "## Pre-Computed Data Card (use these FACTS, do not recompute):\n"
+        + json.dumps(data_card_sections, indent=2, default=str)
+        + "\n\n## Portfolio Input:\n"
         + analyst_input.model_dump_json(by_alias=True)
     )
 
@@ -768,6 +853,7 @@ async def generate_company_artifact(
                 raw_text=_extract_text(response),
             )
             report_card = _fix_internal_consistency(report_card)
+            report_card = _inject_data_card_sources(report_card, data_card_sections)
             report_card = _sync_source_map_to_data_sources(report_card)
             _log_response_usage(
                 label=f"[{holding.tradingsymbol}] analyst_structured",
@@ -781,11 +867,12 @@ async def generate_company_artifact(
                 },
             )
 
-            artifact = _build_company_artifact(
+            artifact = _build_company_data_card_artifact(
                 report_card=report_card,
                 holding=holding,
                 config=config,
-                yfinance_data=yfinance_data,
+                data_card_sections=data_card_sections,
+                macro_context=macro_context,
             )
             output_path = save_company_analysis_artifact(artifact, settings=config)
             logger.info(
@@ -795,18 +882,63 @@ async def generate_company_artifact(
                 time.perf_counter() - started,
             )
 
-            report_card_json = artifact.report_card.model_dump_json()
+            report_card_json = artifact.analysis.model_dump_json()
+
+            # Build compact data card summary for judge context
+            data_card_summary = {
+                "price": {
+                    "cmp": data_card_sections.get("price_data", {}).get("cmp"),
+                    "vs_200dma_pct": data_card_sections.get("price_data", {}).get("vs_200dma_pct"),
+                    "alpha_vs_nifty": data_card_sections.get("price_data", {}).get("alpha_vs_nifty_52w_pct"),
+                },
+                "valuation": {
+                    "trailing_pe": data_card_sections.get("valuation", {}).get("trailing_pe"),
+                    "sector_pe": data_card_sections.get("valuation", {}).get("sector_pe"),
+                    "pe_premium_pct": data_card_sections.get("valuation", {}).get("pe_premium_to_sector_pct"),
+                    "peg": data_card_sections.get("valuation", {}).get("peg_ratio"),
+                    "analyst_target_mean": data_card_sections.get("valuation", {}).get("analyst_target_mean"),
+                },
+                "financials": {
+                    "debt_to_equity": data_card_sections.get("financials", {}).get("debt_to_equity"),
+                    "ebitda_margin_pct": data_card_sections.get("financials", {}).get("ebitda_margin_pct"),
+                    "net_cash": data_card_sections.get("financials", {}).get("net_cash"),
+                    "revenue_growth_pct": data_card_sections.get("financials", {}).get("revenue_growth_pct"),
+                },
+                "quality": {
+                    "roe_proxy_pct": data_card_sections.get("quality", {}).get("roe_proxy_pct"),
+                    "roce_proxy_pct": data_card_sections.get("quality", {}).get("roce_proxy_pct"),
+                    "delivery_pct": data_card_sections.get("quality", {}).get("delivery_pct"),
+                },
+                "nse_quarterly": {
+                    "revenue_qoq_pct": data_card_sections.get("nse_quarterly", {}).get("revenue_qoq_pct"),
+                    "revenue_yoy_pct": data_card_sections.get("nse_quarterly", {}).get("revenue_yoy_pct"),
+                    "eps_qoq_pct": data_card_sections.get("nse_quarterly", {}).get("eps_qoq_pct"),
+                    "latest_quarter": (
+                        data_card_sections.get("nse_quarterly", {}).get("quarters", [{}])[0]
+                        if data_card_sections.get("nse_quarterly", {}).get("quarters")
+                        else {}
+                    ),
+                },
+                "ownership": {
+                    "promoter_holding_pct": data_card_sections.get("ownership", {}).get("promoter_holding_pct"),
+                    "promoter_qoq_change": data_card_sections.get("ownership", {}).get("promoter_holding_qoq_change"),
+                },
+            }
+            data_card_context = json.dumps(data_card_summary, ensure_ascii=True)
+
             judge_result = await judge_report_card(
                 report_card_json=report_card_json,
                 ticker=holding.tradingsymbol,
                 config=config,
                 client=raw_client,
+                data_card_context=data_card_context,
             )
             factual_result = await judge_factual_grounding(
                 report_card_json=report_card_json,
                 ticker=holding.tradingsymbol,
                 config=config,
                 client=raw_client,
+                data_card_context=data_card_context,
             )
             if judge_result:
                 logger.info(
@@ -855,7 +987,7 @@ async def generate_company_artifact(
             # Emit structured output to the active Langfuse generation span
             if lf:
                 try:
-                    rc = artifact.report_card
+                    rc = artifact.analysis
                     lf.update_current_generation(
                         output={
                             "verdict": rc.final_verdict.verdict,
@@ -991,7 +1123,7 @@ async def generate_yfinance_only_company_artifact(
     holding: Holding,
     client: AsyncAnthropic | Any,
     config: Settings,
-) -> CompanyAnalysisArtifact:
+) -> CompanyDataCard:
     raw_company_info = await get_yfinance_company_info(holding.tradingsymbol)
     yfinance_data = await get_yfinance_snapshot(holding.tradingsymbol)
     if not raw_company_info or not yfinance_data:
@@ -1051,11 +1183,57 @@ async def generate_yfinance_only_company_artifact(
     report_card.data_sources = []
     report_card.source_map = {key: "Not available" for key in REQUIRED_SOURCE_MAP_KEYS}
     report_card.final_verdict.confidence = "Low"
-    artifact = _build_company_artifact(
+    # Build minimal data card sections from yfinance only (nse_raw={})
+    data_card_sections = build_company_data_card(
+        ticker=holding.tradingsymbol,
+        exchange=holding.exchange,
+        yf_raw=raw_company_info,
+        nse_raw={},
+        price_context={},
+    )
+    artifact = _build_company_data_card_artifact(
         report_card=report_card,
         holding=holding,
         config=config,
-        yfinance_data=yfinance_data,
+        data_card_sections=data_card_sections,
     )
     save_company_analysis_artifact(artifact, settings=config)
     return artifact
+
+
+def _provider_compare_dir(config: Settings) -> Path:
+    path = config.kite_data_dir / "provider_compare"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+async def export_provider_comparison_files(
+    ticker: str,
+    *,
+    exchange: str,
+    config: Settings,
+) -> list[Path]:
+    normalized_ticker = str(ticker).strip().upper()
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    yahoo_task = get_yfinance_provider_payload(normalized_ticker)
+    nse_task = get_nse_india_provider_payload(normalized_ticker)
+    yahoo_payload, nse_payload = await asyncio.gather(yahoo_task, nse_task)
+
+    provider_payloads = (
+        ("yfinance", yahoo_payload),
+        ("nse_india", nse_payload),
+    )
+    output_dir = _provider_compare_dir(config)
+    saved_paths: list[Path] = []
+    for provider_name, payload in provider_payloads:
+        enriched_payload = {
+            "provider": provider_name,
+            "ticker": normalized_ticker,
+            "exchange": exchange.upper(),
+            "fetched_at": fetched_at,
+            **payload,
+        }
+        path = output_dir / f"{normalized_ticker}_{provider_name}.json"
+        path.write_text(json.dumps(enriched_payload, indent=2, ensure_ascii=True), encoding="utf-8")
+        saved_paths.append(path)
+    return saved_paths

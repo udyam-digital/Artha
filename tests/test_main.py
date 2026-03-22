@@ -101,3 +101,30 @@ async def test_handle_analyst_runs_standalone_pipeline(tmp_path: Path, monkeypat
     assert rc == 0
     assert "ANALYST REPORT CARD" in captured.out
     assert "BSE.NS" in captured.out
+
+
+async def test_handle_compare_providers_prints_saved_paths(tmp_path: Path, monkeypatch, capsys) -> None:
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+
+    async def fake_export_provider_comparison_files(ticker, *, exchange, config):
+        assert ticker == "BSE"
+        assert exchange == "NSE"
+        assert config is settings
+        out_dir = tmp_path / "kite" / "provider_compare"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            out_dir / "BSE_yfinance.json",
+            out_dir / "BSE_nse_india.json",
+        ]
+
+    monkeypatch.setattr(main, "export_provider_comparison_files", fake_export_provider_comparison_files)
+
+    args = argparse.Namespace(ticker="BSE", exchange="NSE")
+    rc = await main.handle_compare_providers(args)
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "Provider comparison files for BSE (Yahoo Finance + NSE India):" in captured.out
+    assert "BSE_yfinance.json" in captured.out
+    assert "BSE_nse_india.json" in captured.out

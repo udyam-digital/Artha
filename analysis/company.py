@@ -9,7 +9,7 @@ from anthropic import AsyncAnthropic
 
 from analysis.analyst import generate_company_artifact
 from config import Settings
-from models import CompanyAnalysisArtifact, Holding, StockVerdict
+from models import CompanyAnalysisArtifact, CompanyDataCard, Holding, StockVerdict
 from persistence.store import load_company_analysis_artifact
 
 
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 def artifact_to_stock_verdict(
     *,
-    artifact: CompanyAnalysisArtifact,
+    artifact: CompanyDataCard | CompanyAnalysisArtifact,
     holding: Holding,
     duration_seconds: float,
 ) -> StockVerdict:
-    report_card = artifact.report_card
+    report_card = artifact.analysis if isinstance(artifact, CompanyDataCard) else artifact.report_card
     final_signal = report_card.final_verdict.verdict
     risk_items = (
         report_card.risk_matrix.company_risks
@@ -96,13 +96,13 @@ def artifact_to_stock_verdict(
             f"{report_card.risk_matrix.risk_level.lower()}."
         ),
         data_sources=report_card.data_sources,
-        yfinance_data=artifact.yfinance_data,
+        yfinance_data=artifact.yfinance_data if isinstance(artifact, CompanyAnalysisArtifact) else {},
         analysis_duration_seconds=duration_seconds,
         error=None,
     )
 
 
-def is_company_artifact_fresh(*, artifact: CompanyAnalysisArtifact, settings: Settings) -> bool:
+def is_company_artifact_fresh(*, artifact: CompanyDataCard | CompanyAnalysisArtifact, settings: Settings) -> bool:
     max_age = timedelta(days=settings.company_analysis_max_age_days)
     age = datetime.now(timezone.utc) - artifact.generated_at
     return age <= max_age
@@ -117,8 +117,8 @@ async def get_company_artifact_and_verdict(
     client: AsyncAnthropic,
     settings: Settings,
     before_generate: Callable[[], Awaitable[None]] | None = None,
-) -> tuple[CompanyAnalysisArtifact, StockVerdict, bool]:
-    artifact: CompanyAnalysisArtifact | None = None
+) -> tuple[CompanyDataCard | CompanyAnalysisArtifact, StockVerdict, bool]:
+    artifact: CompanyDataCard | CompanyAnalysisArtifact | None = None
     from_cache = False
 
     try:

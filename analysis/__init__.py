@@ -1,5 +1,6 @@
 from analysis.analyst import (
     analyse_stock,
+    export_provider_comparison_files,
     generate_company_artifact,
     generate_yfinance_only_company_artifact,
     MAX_ANALYST_ITERATIONS,

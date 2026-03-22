@@ -13,16 +13,33 @@ from config import Settings
 logger = logging.getLogger(__name__)
 
 
-def _build_rubric() -> str:
+def _build_rubric(data_card_context: str = "") -> str:
     ctx = get_fiscal_context()
     latest_q = ctx["latest_quarter"]   # e.g. "Q3 FY26"
     prev_q = ctx["prev_quarter"]       # e.g. "Q2 FY26"
     current_fy = ctx["current_fy"]     # e.g. "FY26"
+    data_card_section = ""
+    if data_card_context:
+        data_card_section = f"""
+## Pre-Verified Data Card
+The analyst had access to a CompanyDataCard with pre-computed facts from yfinance and NSE India APIs.
+These source_map values are VALID and should NOT be penalized:
+- "yfinance API" = verified from Yahoo Finance API
+- "NSE India API" = verified from NSE India official API
+
+When scoring source_grounding and hallucination_risk:
+- source_map entries of "yfinance API" or "NSE India API" count as grounded sources
+- Numbers in the report card that match the data card values below are VERIFIED FACTS, not hallucinations
+- Only penalize for numbers that CONTRADICT the data card, or for numbers not in the data card that lack URL sources
+
+Pre-computed data card values:
+{data_card_context}
+"""
     return f"""
 You are a senior equity research QA evaluator for Indian stocks.
 
 Today: {ctx['today_date']}. Latest published quarter: {latest_q}.
-
+{data_card_section}
 Score the following analyst report card JSON on four dimensions.
 Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
 
@@ -48,7 +65,8 @@ verdict_logic (0-100):
   - Does the final verdict align with timing_signal and risk_level?
   - BUY/ADD + Risky timing + High risk = contradiction → max 40
   - Is confidence (HIGH/MEDIUM/LOW) justified by data quality and number of sources?
-  - Fewer than 2 real URLs in data_sources → LOW confidence is required
+  - Fewer than 2 real URLs in data_sources AND no "yfinance API"/"NSE India API" source_map entries → LOW confidence is required
+  - If source_map has 5+ entries with "yfinance API" or "NSE India API", MEDIUM confidence is acceptable
 
 Return this exact JSON:
 {{
@@ -70,13 +88,14 @@ async def judge_report_card(
     ticker: str,
     config: Settings,
     client: AsyncAnthropic | Any,
+    data_card_context: str = "",
 ) -> dict[str, Any] | None:
     """
     Asks Haiku to grade an analyst report card.
     Returns score dict or None on failure. Never raises.
     """
     raw_client: AsyncAnthropic = getattr(client, "client", client)
-    rubric = _build_rubric()
+    rubric = _build_rubric(data_card_context=data_card_context)
     try:
         response = await raw_client.messages.create(
             model=config.analyst_model,
@@ -103,34 +122,51 @@ async def judge_report_card(
         return None
 
 
-def _build_factual_rubric() -> str:
+def _build_factual_rubric(data_card_context: str = "") -> str:
     ctx = get_fiscal_context()
+    data_card_section = ""
+    if data_card_context:
+        data_card_section = f"""
+## Cross-Verification Against Data Card
+The analyst had access to a CompanyDataCard with pre-computed facts from yfinance and NSE India APIs.
+Compare report card numbers against the pre-computed data card below.
+- If a number MATCHES the data card → mark as verified, do not flag as hallucination
+- If a number CONTRADICTS the data card → flag as inconsistency
+- If a number is NOT in the data card AND has no URL source → flag as unverified
+
+source_map values of "yfinance API" or "NSE India API" are VALID grounded sources — count them toward source_grounding score.
+
+Pre-computed data card values:
+{data_card_context}
+"""
     return f"""
 You are a senior equity research fact-checker for Indian stocks.
 
 Today: {ctx['today_date']}. Latest published quarter: {ctx['latest_quarter']}.
-
+{data_card_section}
 Evaluate the analyst report card JSON for factual grounding, hallucination risk,
 and internal data consistency. Return ONLY valid JSON — no markdown fences, no explanation.
 
 SCORING RUBRIC:
 
 source_grounding (0-100):
-  - Does source_map exist with 5+ entries mapping metric names (revenue_cagr, roce, pe, etc.) to URLs? → required for >80
-  - Do source_map URLs match entries in data_sources? → required for >70
-  - Are there 3+ real URLs in data_sources? → required for >50
+  - Does source_map exist with 5+ entries mapping metric names (revenue_cagr, roce, pe, etc.) to URLs or "yfinance API"/"NSE India API"? → required for >80
+  - source_map entries of "yfinance API" or "NSE India API" are VALID grounded sources (count toward the 5+ requirement)
+  - Do source_map URLs match entries in data_sources? → required for >70 (API provider entries exempt from this check)
+  - Are there 3+ real URLs in data_sources OR 5+ API-sourced source_map entries? → required for >50
   - Do URLs look like real Indian financial sites (screener.in, moneycontrol.com, trendlyne.com, tickertape.in, bseindia.com)? → high score
-  - Each claimed number (ROCE, PE, revenue growth, EPS) should have a source_map entry pointing to a real URL → required for >90
-  - Generic or placeholder URLs, or empty source_map → max 20
+  - Each claimed number (ROCE, PE, revenue growth, EPS) should have a source_map entry pointing to a URL or "yfinance API"/"NSE India API" → required for >90
+  - Completely empty source_map (all "Not available") → max 20
 
 hallucination_risk (0-100, inverted — high = good, low = bad):
   - Are numerical claims (growth rates, PE ratios, fair values) plausible given the sector? → high score
-  - Are there fabricated-looking specifics (exact quarterly numbers, competitor cost advantages) with no matching data_source or source_map entry? → deduct 30
+  - Numbers that match the pre-computed data card above are VERIFIED FACTS — do NOT flag as hallucinations
+  - Are there fabricated-looking specifics (exact quarterly numbers, competitor cost advantages) with no matching data_source, source_map entry, OR data card value? → deduct 30
   - Does revenue_cagr / eps_cagr look realistic for the sector and market cap? → check
   - Does eps_cagr reference per-share EPS (not absolute net profit in crores)? Confusing net profit with EPS → deduct 20
   - Is a "5-year CAGR" or "3-year CAGR" cited? Historical multi-year CAGR is stale data → deduct 15
   - Outlandish fair_value_range vs current_price → deduct 20
-  - Claims about analyst targets, FII positions, or competitor data without a source_map entry → deduct 15 each
+  - Claims about analyst targets, FII positions, or competitor data without a source_map entry or data card value → deduct 15 each
   - Claims of "market leader", "monopolistic position", or competitive superiority without sourced evidence → deduct 10
 
 data_consistency (0-100):
@@ -161,13 +197,14 @@ async def judge_factual_grounding(
     ticker: str,
     config: Settings,
     client: AsyncAnthropic | Any,
+    data_card_context: str = "",
 ) -> dict[str, Any] | None:
     """
     Asks Haiku to evaluate factual grounding, hallucination risk, and data consistency.
     Returns score dict or None on failure. Never raises.
     """
     raw_client: AsyncAnthropic = getattr(client, "client", client)
-    rubric = _build_factual_rubric()
+    rubric = _build_factual_rubric(data_card_context=data_card_context)
     try:
         response = await raw_client.messages.create(
             model=config.analyst_model,

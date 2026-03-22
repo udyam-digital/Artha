@@ -2,6 +2,18 @@
 
 This file tracks practical improvement recommendations for Artha from a senior GenAI architect perspective. The emphasis is on auditability, regression resistance, conservative financial behavior, and keeping repository guidance aligned with the actual codebase.
 
+## New Findings
+
+### Provider comparison
+
+Relevant skills: `python-mcp-server-generator`, `pytest-coverage`
+
+The active `compare-providers` flow should stay focused on Yahoo Finance and NSE India:
+
+- Yahoo Finance is the strongest general-purpose enrichment source for NSE names like `BSE`, with both rich fundamentals and clean flat metrics.
+- `stock-nse-india` is strong for India-specific exchange data, market structure context, listing metadata, and 52-week range data, but its upstream stdio CLI prints banner text to stdout before JSON-RPC frames. Artha tolerates this today, but the transport is noisy and should be replaced with a quieter wrapper or vendored server path.
+- Alpha Vantage is not worth keeping in the active Artha path for Indian equities. It adds rate-limit pressure, symbol-resolution ambiguity, and weak incremental value relative to Yahoo plus NSE India.
+
 ## Highest Priority
 
 ### 1. Add eval-driven quality gates for report behavior
