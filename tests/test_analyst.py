@@ -9,8 +9,7 @@ import pytest
 
 from analysis.analyst import analyse_stock
 from config import Settings
-from models import AnalystReportCard, Holding
-
+from models import Holding
 
 pytestmark = pytest.mark.anyio
 
@@ -122,7 +121,9 @@ def make_holding() -> Holding:
     )
 
 
-def make_report_card_payload(ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD") -> dict[str, Any]:
+def make_report_card_payload(
+    ticker: str, name: str = "KPIT Technologies", final_verdict: str = "ADD"
+) -> dict[str, Any]:
     return {
         "stock_snapshot": {
             "name": name,
@@ -224,9 +225,7 @@ def make_final_response(ticker: str = "KPITTECH", name: str = "KPIT Technologies
 async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> None:
     tool_use_response = SimpleNamespace(
         stop_reason="tool_use",
-        content=[
-            SimpleNamespace(type="tool_use", id="tool-1", name="tavily_search", input={"query": "KPIT results"})
-        ],
+        content=[SimpleNamespace(type="tool_use", id="tool-1", name="tavily_search", input={"query": "KPIT results"})],
         usage=SimpleNamespace(input_tokens=10, output_tokens=5),
     )
     final_response = make_final_response("KPITTECH")
@@ -248,7 +247,7 @@ async def test_analyse_stock_parses_tool_use_then_end_turn(tmp_path: Path) -> No
     assert verdict.error is None
     assert len(verdict.data_sources) == 2
     assert (tmp_path / "kite" / "companies" / "KPITTECH.json").exists()
-    assert "tavily_search" == tool_use_response.content[0].name
+    assert tool_use_response.content[0].name == "tavily_search"
 
 
 async def test_analyse_stock_uses_analyst_model(tmp_path: Path) -> None:
@@ -466,12 +465,14 @@ async def test_analyse_stock_retries_on_low_judge_score(tmp_path: Path) -> None:
         return PASSING_FACTUAL_SCORES
 
     # We need 2 end_turn responses (first attempt + retry) and 2 instructor responses
-    client = FakeAnthropicClient([
-        make_final_response("KPITTECH"),  # first analyst run
-        make_final_response("KPITTECH"),  # first instructor coerce
-        make_final_response("KPITTECH"),  # retry analyst run
-        make_final_response("KPITTECH"),  # retry instructor coerce
-    ])
+    client = FakeAnthropicClient(
+        [
+            make_final_response("KPITTECH"),  # first analyst run
+            make_final_response("KPITTECH"),  # first instructor coerce
+            make_final_response("KPITTECH"),  # retry analyst run
+            make_final_response("KPITTECH"),  # retry instructor coerce
+        ]
+    )
 
     settings = make_settings(tmp_path)
     settings = Settings(
@@ -536,6 +537,7 @@ async def test_analyse_stock_persists_judge_scores(tmp_path: Path) -> None:
     judge_path = tmp_path / "kite" / "companies" / "KPITTECH_judge.json"
     assert judge_path.exists()
     import json
+
     scores = json.loads(judge_path.read_text())
     assert scores["ticker"] == "KPITTECH"
     assert scores["quality_scores"] is not None

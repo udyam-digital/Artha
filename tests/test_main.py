@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,6 @@ from config import Settings
 from models import CompanyAnalysisArtifact
 from reliability import FullRunFailed
 from tests.test_analyst import make_report_card_payload
-
 
 pytestmark = pytest.mark.anyio
 

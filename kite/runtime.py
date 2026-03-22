@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from config import Settings, get_settings
 from kite.client import KiteMCPClient, ToolExecutionError, load_kite_server_definition
-from kite.tools import kite_get_mf_snapshot, kite_get_portfolio, kite_get_profile, kite_login, profile_requires_login, wait_for_kite_login
+from kite.tools import (
+    kite_get_mf_snapshot,
+    kite_get_portfolio,
+    kite_get_profile,
+    kite_login,
+    profile_requires_login,
+    wait_for_kite_login,
+)
 from models import MFSnapshot, PortfolioSnapshot
 from persistence.store import (
     load_latest_mf_snapshot,
@@ -15,7 +22,6 @@ from persistence.store import (
     save_mf_snapshot,
     save_portfolio_snapshot,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +73,7 @@ async def sync_kite_data_with_client(
 
     if profile_requires_login(profile):
         if not auto_login:
-            raise ToolExecutionError(
-                "Kite session is not authenticated. Run `python main.py kite-login` first."
-            )
+            raise ToolExecutionError("Kite session is not authenticated. Run `python main.py kite-login` first.")
 
         _, auth_url, auth_artifact = await kite_login(kite_client, settings=settings)
         logger.info("Kite login required. Complete authentication at: %s", auth_url or "login URL unavailable")
@@ -97,7 +101,7 @@ def load_same_day_kite_sync_result(settings: Settings | None = None) -> KiteSync
     except FileNotFoundError:
         return None
 
-    today_utc = datetime.now(timezone.utc).date()
+    today_utc = datetime.now(UTC).date()
     if portfolio_snapshot.fetched_at.date() != today_utc:
         return None
     if mf_snapshot.fetched_at.date() != today_utc:

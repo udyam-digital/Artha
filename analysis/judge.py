@@ -9,15 +9,28 @@ from anthropic import AsyncAnthropic
 from analysis.fiscal import get_fiscal_context
 from config import Settings
 
-
 logger = logging.getLogger(__name__)
 
 
-def _build_rubric(data_card_context: str = "") -> str:
+def _build_rubric(data_card_context: str = "", overwritten_fields_context: str = "") -> str:
     ctx = get_fiscal_context()
-    latest_q = ctx["latest_quarter"]   # e.g. "Q3 FY26"
-    prev_q = ctx["prev_quarter"]       # e.g. "Q2 FY26"
-    current_fy = ctx["current_fy"]     # e.g. "FY26"
+    latest_q = ctx["latest_quarter"]  # e.g. "Q3 FY26"
+    prev_q = ctx["prev_quarter"]  # e.g. "Q2 FY26"
+    current_fy = ctx["current_fy"]  # e.g. "FY26"
+    overwritten_section = ""
+    if overwritten_fields_context:
+        overwritten_section = f"""
+## Python-Overwritten Fields (GUARANTEED CORRECT — DO NOT PENALISE)
+The following fields in the report card were NOT written by the LLM.
+They were computed by Python directly from verified API data and then injected into the report card.
+These fields are 100% accurate. Do not flag them as hallucinations. Do not require URL sources for them.
+Do not penalise source_map for these metrics — they are sourced from the APIs shown:
+
+{overwritten_fields_context}
+
+IMPORTANT: When you see these exact values in the report card, treat them as pre-verified facts.
+Only evaluate the LLM-generated narrative fields (thesis, risks, monitoring, timing_signal verdict, etc.)
+"""
     data_card_section = ""
     if data_card_context:
         data_card_section = f"""
@@ -38,8 +51,8 @@ Pre-computed data card values:
     return f"""
 You are a senior equity research QA evaluator for Indian stocks.
 
-Today: {ctx['today_date']}. Latest published quarter: {latest_q}.
-{data_card_section}
+Today: {ctx["today_date"]}. Latest published quarter: {latest_q}.
+{overwritten_section}{data_card_section}
 Score the following analyst report card JSON on four dimensions.
 Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
 
@@ -89,13 +102,14 @@ async def judge_report_card(
     config: Settings,
     client: AsyncAnthropic | Any,
     data_card_context: str = "",
+    overwritten_fields_context: str = "",
 ) -> dict[str, Any] | None:
     """
     Asks Haiku to grade an analyst report card.
     Returns score dict or None on failure. Never raises.
     """
     raw_client: AsyncAnthropic = getattr(client, "client", client)
-    rubric = _build_rubric(data_card_context=data_card_context)
+    rubric = _build_rubric(data_card_context=data_card_context, overwritten_fields_context=overwritten_fields_context)
     try:
         response = await raw_client.messages.create(
             model=config.analyst_model,
@@ -122,8 +136,22 @@ async def judge_report_card(
         return None
 
 
-def _build_factual_rubric(data_card_context: str = "") -> str:
+def _build_factual_rubric(data_card_context: str = "", overwritten_fields_context: str = "") -> str:
     ctx = get_fiscal_context()
+    overwritten_section = ""
+    if overwritten_fields_context:
+        overwritten_section = f"""
+## Python-Overwritten Fields (GUARANTEED CORRECT — DO NOT PENALISE)
+The following fields in the report card were NOT written by the LLM.
+They were computed by Python directly from verified API data and then injected into the report card.
+These fields are 100% accurate. Do not flag them as hallucinations. Do not require URL sources for them.
+Do not penalise source_map for these metrics — they are sourced from the APIs shown:
+
+{overwritten_fields_context}
+
+IMPORTANT: When you see these exact values in the report card, treat them as pre-verified facts.
+Only evaluate the LLM-generated narrative fields (thesis, risks, monitoring, timing_signal verdict, etc.)
+"""
     data_card_section = ""
     if data_card_context:
         data_card_section = f"""
@@ -142,14 +170,20 @@ Pre-computed data card values:
     return f"""
 You are a senior equity research fact-checker for Indian stocks.
 
-Today: {ctx['today_date']}. Latest published quarter: {ctx['latest_quarter']}.
-{data_card_section}
+Today: {ctx["today_date"]}. Latest published quarter: {ctx["latest_quarter"]}.
+{overwritten_section}{data_card_section}
 Evaluate the analyst report card JSON for factual grounding, hallucination risk,
 and internal data consistency. Return ONLY valid JSON — no markdown fences, no explanation.
 
 SCORING RUBRIC:
 
 source_grounding (0-100):
+  - 9+ entries in source_map pointing to "yfinance API" or "NSE India API" → score ≥ 80 (these ARE real sources)
+  - 5-8 API entries → score ≥ 65
+  - 3+ real https:// URLs in data_sources (Tavily-sourced) → add +15 to score
+  - source_map entries of "yfinance API" or "NSE India API" are EQUAL to real URLs — they trace to verified financial data APIs
+  - Completely empty source_map (all "Not available") → max 20
+  - Python-overwritten fields listed above do NOT need additional sourcing
   - Does source_map exist with 5+ entries mapping metric names (revenue_cagr, roce, pe, etc.) to URLs or "yfinance API"/"NSE India API"? → required for >80
   - source_map entries of "yfinance API" or "NSE India API" are VALID grounded sources (count toward the 5+ requirement)
   - Do source_map URLs match entries in data_sources? → required for >70 (API provider entries exempt from this check)
@@ -198,13 +232,16 @@ async def judge_factual_grounding(
     config: Settings,
     client: AsyncAnthropic | Any,
     data_card_context: str = "",
+    overwritten_fields_context: str = "",
 ) -> dict[str, Any] | None:
     """
     Asks Haiku to evaluate factual grounding, hallucination risk, and data consistency.
     Returns score dict or None on failure. Never raises.
     """
     raw_client: AsyncAnthropic = getattr(client, "client", client)
-    rubric = _build_factual_rubric(data_card_context=data_card_context)
+    rubric = _build_factual_rubric(
+        data_card_context=data_card_context, overwritten_fields_context=overwritten_fields_context
+    )
     try:
         response = await raw_client.messages.create(
             model=config.analyst_model,

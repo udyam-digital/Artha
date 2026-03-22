@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import logging
-from json import JSONDecodeError, loads
 from functools import lru_cache
+from json import JSONDecodeError, loads
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_KITE_MCP_URL = "https://mcp.kite.trade/mcp"
@@ -64,12 +63,16 @@ class Settings(BaseSettings):
     kite_mcp_env_json: dict[str, str] = Field(default_factory=dict, alias="KITE_MCP_ENV_JSON")
     kite_mcp_timeout_seconds: int = Field(default=30, alias="KITE_MCP_TIMEOUT_SECONDS")
     yfinance_mcp_command: str = Field(default=DEFAULT_YFINANCE_MCP_COMMAND, alias="YFINANCE_MCP_COMMAND")
-    yfinance_mcp_args: list[str] = Field(default_factory=lambda: list(DEFAULT_YFINANCE_MCP_ARGS), alias="YFINANCE_MCP_ARGS")
+    yfinance_mcp_args: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_YFINANCE_MCP_ARGS), alias="YFINANCE_MCP_ARGS"
+    )
     yfinance_mcp_env_json: dict[str, str] = Field(default_factory=dict, alias="YFINANCE_MCP_ENV_JSON")
     yfinance_mcp_timeout_seconds: int = Field(default=30, alias="YFINANCE_MCP_TIMEOUT_SECONDS")
     nse_mcp_command: str = Field(default=DEFAULT_NSE_MCP_COMMAND, alias="NSE_MCP_COMMAND")
     nse_mcp_args: list[str] = Field(default_factory=lambda: list(DEFAULT_NSE_MCP_ARGS), alias="NSE_MCP_ARGS")
-    nse_mcp_env_json: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_NSE_MCP_ENV_JSON), alias="NSE_MCP_ENV_JSON")
+    nse_mcp_env_json: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_NSE_MCP_ENV_JSON), alias="NSE_MCP_ENV_JSON"
+    )
     nse_mcp_timeout_seconds: int = Field(default=30, alias="NSE_MCP_TIMEOUT_SECONDS")
     kite_data_dir: Path = Field(default=ROOT_DIR / "data" / "kite", alias="KITE_DATA_DIR")
     kite_login_timeout_seconds: int = Field(default=180, alias="KITE_LOGIN_TIMEOUT_SECONDS")
@@ -78,7 +81,7 @@ class Settings(BaseSettings):
     judge_max_retries: int = Field(default=1, alias="JUDGE_MAX_RETRIES")
 
     @model_validator(mode="after")
-    def resolve_relative_paths(self) -> "Settings":
+    def resolve_relative_paths(self) -> Settings:
         for attr in ("reports_dir", "llm_usage_dir", "kite_data_dir"):
             p: Path = getattr(self, attr)
             if not p.is_absolute():

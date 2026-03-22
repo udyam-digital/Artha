@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,16 +13,15 @@ import httpx
 
 from config import Settings, get_settings
 from kite.client import (
-    MCPToolClient,
     KiteMCPClient,
+    MCPToolClient,
     ToolExecutionError,
     load_nse_server_definition,
     load_yfinance_server_definition,
 )
-from models import Holding, MFHolding, MFSnapshot, MacroContext, PortfolioSnapshot
+from models import Holding, MacroContext, MFHolding, MFSnapshot, PortfolioSnapshot
 from rebalance import PASSIVE_INSTRUMENTS
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
-
 
 logger = logging.getLogger(__name__)
 _YFINANCE_FIELDS = (
@@ -124,7 +123,9 @@ def _map_yfinance_snapshot(ticker: str, raw_payload: dict[str, Any]) -> dict[str
             "forward_pe": _coerce_optional_float(raw_payload.get("forwardPE")),
             "price_to_book": _coerce_optional_float(raw_payload.get("priceToBook")),
             "revenue_growth_pct": _coerce_percent(raw_payload.get("revenueGrowth")),
-            "earnings_growth_pct": _coerce_percent(raw_payload.get("earningsGrowth") or raw_payload.get("earningsQuarterlyGrowth")),
+            "earnings_growth_pct": _coerce_percent(
+                raw_payload.get("earningsGrowth") or raw_payload.get("earningsQuarterlyGrowth")
+            ),
             "profit_margin_pct": _coerce_percent(raw_payload.get("profitMargins")),
             "analyst_count": _coerce_optional_int(raw_payload.get("numberOfAnalystOpinions")),
             "target_mean_price": target_mean_price,
@@ -193,18 +194,30 @@ def _find_value(record: dict[str, Any], *keys: str) -> Any:
 def _month_sort_value(value: Any) -> int:
     text = str(value or "").strip()
     month_map = {
-        "jan": 1, "january": 1,
-        "feb": 2, "february": 2,
-        "mar": 3, "march": 3,
-        "apr": 4, "april": 4,
+        "jan": 1,
+        "january": 1,
+        "feb": 2,
+        "february": 2,
+        "mar": 3,
+        "march": 3,
+        "apr": 4,
+        "april": 4,
         "may": 5,
-        "jun": 6, "june": 6,
-        "jul": 7, "july": 7,
-        "aug": 8, "august": 8,
-        "sep": 9, "sept": 9, "september": 9,
-        "oct": 10, "october": 10,
-        "nov": 11, "november": 11,
-        "dec": 12, "december": 12,
+        "jun": 6,
+        "june": 6,
+        "jul": 7,
+        "july": 7,
+        "aug": 8,
+        "august": 8,
+        "sep": 9,
+        "sept": 9,
+        "september": 9,
+        "oct": 10,
+        "october": 10,
+        "nov": 11,
+        "november": 11,
+        "dec": 12,
+        "december": 12,
     }
     if text.isdigit():
         return int(text)
@@ -372,7 +385,7 @@ def _extract_holdings_payload(raw_response: Any) -> list[dict[str, Any]]:
 
 
 def _extract_available_cash(raw_margins: Any) -> float:
-    if isinstance(raw_margins, (int, float)):
+    if isinstance(raw_margins, int | float):
         return float(raw_margins)
     if not isinstance(raw_margins, dict):
         return 0.0
@@ -442,7 +455,7 @@ def _parse_target_weights_from_rules(rules_path: Path) -> dict[str, float]:
         if "%" not in line or ":" not in line:
             continue
         lhs, rhs = line.split(":", maxsplit=1)
-        symbol = lhs.strip("- *` ").upper()
+        symbol = lhs.translate(str.maketrans("", "", "- *`")).strip().upper()
         pct_text = rhs.split("%", maxsplit=1)[0].strip()
         try:
             weights[symbol] = float(pct_text)
@@ -531,7 +544,7 @@ async def kite_get_portfolio(
         logger.info("MF holdings value excluded from rebalancing portfolio total: %.2f", mf_total_value)
 
     return PortfolioSnapshot(
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         total_value=total_value,
         available_cash=available_cash,
         holdings=holdings,
@@ -552,7 +565,7 @@ async def kite_get_mf_snapshot(
     holdings = [_normalize_mf_holding(item) for item in payload]
     total_value = sum(holding.current_value for holding in holdings)
     return MFSnapshot(
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         total_value=total_value,
         holdings=holdings,
     )
@@ -564,7 +577,7 @@ async def kite_get_price_history(
     instrument_token: int,
     days: int = 365,
 ) -> dict[str, Any]:
-    end_date = datetime.now(timezone.utc)
+    end_date = datetime.now(UTC)
     start_date = end_date - timedelta(days=days)
 
     try:
@@ -744,7 +757,9 @@ async def get_nse_india_provider_payload(ticker: str) -> dict[str, Any]:
     price_info = details.get("priceInfo") if isinstance(details.get("priceInfo"), dict) else {}
     metadata = details.get("metadata") if isinstance(details.get("metadata"), dict) else {}
     security_info = details.get("securityInfo") if isinstance(details.get("securityInfo"), dict) else {}
-    market_book = trade_info.get("marketDeptOrderBook") if isinstance(trade_info.get("marketDeptOrderBook"), dict) else {}
+    market_book = (
+        trade_info.get("marketDeptOrderBook") if isinstance(trade_info.get("marketDeptOrderBook"), dict) else {}
+    )
 
     result["snapshot"] = {
         "company_name": info.get("companyName") or info.get("symbol") or normalized_ticker,
@@ -752,10 +767,22 @@ async def get_nse_india_provider_payload(ticker: str) -> dict[str, Any]:
         "sector": security_info.get("boardStatus"),
         "last_price": _coerce_optional_float(price_info.get("lastPrice") or price_info.get("lastPriceDisplay")),
         "previous_close": _coerce_optional_float(price_info.get("previousClose")),
-        "day_high": _coerce_optional_float(price_info.get("intraDayHighLow", {}).get("max") if isinstance(price_info.get("intraDayHighLow"), dict) else None),
-        "day_low": _coerce_optional_float(price_info.get("intraDayHighLow", {}).get("min") if isinstance(price_info.get("intraDayHighLow"), dict) else None),
-        "fifty_two_week_high": _coerce_optional_float(price_info.get("weekHighLow", {}).get("max") if isinstance(price_info.get("weekHighLow"), dict) else None),
-        "fifty_two_week_low": _coerce_optional_float(price_info.get("weekHighLow", {}).get("min") if isinstance(price_info.get("weekHighLow"), dict) else None),
+        "day_high": _coerce_optional_float(
+            price_info.get("intraDayHighLow", {}).get("max")
+            if isinstance(price_info.get("intraDayHighLow"), dict)
+            else None
+        ),
+        "day_low": _coerce_optional_float(
+            price_info.get("intraDayHighLow", {}).get("min")
+            if isinstance(price_info.get("intraDayHighLow"), dict)
+            else None
+        ),
+        "fifty_two_week_high": _coerce_optional_float(
+            price_info.get("weekHighLow", {}).get("max") if isinstance(price_info.get("weekHighLow"), dict) else None
+        ),
+        "fifty_two_week_low": _coerce_optional_float(
+            price_info.get("weekHighLow", {}).get("min") if isinstance(price_info.get("weekHighLow"), dict) else None
+        ),
         "market_cap": _coerce_optional_float(metadata.get("marketCap")),
         "listing_date": metadata.get("listingDate"),
         "is_fno": info.get("isFNOSec"),
@@ -768,7 +795,7 @@ async def get_nse_india_provider_payload(ticker: str) -> dict[str, Any]:
 
 
 async def get_macro_context() -> MacroContext:
-    cache_key = datetime.now(timezone.utc).date().isoformat()
+    cache_key = datetime.now(UTC).date().isoformat()
     cached = _MACRO_CONTEXT_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -832,7 +859,7 @@ def save_kite_artifact(
     stem: str,
 ) -> Path:
     settings = settings or get_settings()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     artifact = _artifact_path(settings, category, f"{timestamp}_{stem}.json")
     artifact.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
 
@@ -914,9 +941,7 @@ async def wait_for_kite_login(
             return profile
         await asyncio.sleep(settings.kite_login_poll_interval_seconds)
 
-    raise ToolExecutionError(
-        "Kite login did not complete before timeout. Finish the browser login and retry."
-    )
+    raise ToolExecutionError("Kite login did not complete before timeout. Finish the browser login and retry.")
 
 
 def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any]]:

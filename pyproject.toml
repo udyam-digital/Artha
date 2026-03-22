@@ -1,0 +1,53 @@
+[project]
+name = "artha"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "S",     # flake8-bandit (security)
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "S101",  # assert usage (needed in tests)
+    "S603",  # subprocess calls (used for MCP stdio transport)
+    "S607",  # partial executable path
+    "S110",  # try-except-pass (intentional graceful degradation for parsing)
+    "SIM108", # ternary operator (readability preference)
+    "SIM105", # contextlib.suppress vs try-except-pass (readability preference)
+    "SIM103", # return condition directly (readability preference)
+    "SIM102", # nested if (readability preference)
+    "SIM113", # use enumerate (not always clearer)
+    "UP042",  # StrEnum (keep str+Enum for Pydantic compat)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S"]  # disable security warnings in tests
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "analysis",
+    "application",
+    "api",
+    "config",
+    "kite",
+    "models",
+    "observability",
+    "persistence",
+    "rebalance",
+    "reliability",
+    "search",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

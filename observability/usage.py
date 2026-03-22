@@ -6,7 +6,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import Lock
@@ -18,7 +18,6 @@ from anthropic import AsyncAnthropic
 from config import Settings
 from observability.langfuse_client import get_langfuse
 from observability.telemetry import emit_span, start_span
-
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +104,7 @@ _MODEL_PRICING: dict[str, ModelPricing] = {
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _resolve_pricing(model: str) -> ModelPricing | None:
@@ -145,9 +144,8 @@ def _decimal_to_str(value: Decimal) -> str:
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _WRITE_LOCK:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    with _WRITE_LOCK, path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 
 def estimate_input_tokens(*, messages: Any, system: Any | None = None) -> int:
@@ -243,7 +241,9 @@ def usage_run(*, settings: Settings, command: str):
                 completed_at = _utc_now()
                 summary_record = _summary_record(summary, completed_at=completed_at)
                 if summary._span is not None:
-                    summary._span.set_attribute("artha.total_estimated_cost_usd", summary_record["total_estimated_cost_usd"])
+                    summary._span.set_attribute(
+                        "artha.total_estimated_cost_usd", summary_record["total_estimated_cost_usd"]
+                    )
                     summary._span.set_attribute("artha.total_entries", summary.total_entries)
                     summary._span.set_attribute("artha.total_web_search_requests", summary.total_web_search_requests)
                 _append_jsonl(summary.summary_path, summary_record)

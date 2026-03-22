@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -13,7 +13,8 @@ from anthropic import AsyncAnthropic
 
 from analysis.company import get_company_artifact_and_verdict, is_company_artifact_fresh
 from config import Settings
-from kite.runtime import KiteSyncResult, build_kite_client, sync_kite_data, sync_kite_data_with_client
+from kite.runtime import KiteSyncResult, build_kite_client, sync_kite_data_with_client
+from kite.tools import ToolExecutionError, get_macro_context, kite_get_price_history
 from models import Holding, MacroContext, PortfolioReport, PortfolioSnapshot, RebalancingAction, StockVerdict, Verdict
 from observability.langfuse_client import init_langfuse
 from observability.token_budget import TokenBudgetManager
@@ -24,9 +25,8 @@ from observability.usage import (
     record_run_error,
 )
 from persistence.store import company_analysis_path, load_company_analysis_artifact
-from reliability import FullRunFailed, RetryFailure, run_with_retries
 from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
-from kite.tools import ToolExecutionError, get_macro_context, kite_get_price_history
+from reliability import FullRunFailed, RetryFailure, run_with_retries
 
 
 class PhaseEvent(TypedDict):
@@ -67,11 +67,7 @@ async def _build_macro_summary() -> tuple[str, list[str]]:
     except Exception:
         macro = MacroContext(fetch_errors=["macro_context: failed to initialize"])
     errors = list(macro.fetch_errors)
-    if (
-        macro.cpi_headline_yoy is None
-        and macro.iip_growth_latest is None
-        and macro.gdp_growth_latest is None
-    ):
+    if macro.cpi_headline_yoy is None and macro.iip_growth_latest is None and macro.gdp_growth_latest is None:
         return "", errors
     as_of_date = macro.as_of_date or "unknown"
     summary = (
@@ -113,7 +109,7 @@ def build_rebalance_only_report(snapshot: PortfolioSnapshot) -> tuple[PortfolioR
         "Review tax context and thesis quality before acting on any sell recommendation."
     )
     report = PortfolioReport(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         portfolio_snapshot=snapshot,
         verdicts=[],
         portfolio_summary=summary,
@@ -340,7 +336,9 @@ async def run_full_analysis(
     )
 
     if event_callback is not None and sync_result is None:
-        event_callback({"type": "phase", "phase": "kite_sync", "label": "Syncing live portfolio from Kite…", "total": 0})
+        event_callback(
+            {"type": "phase", "phase": "kite_sync", "label": "Syncing live portfolio from Kite…", "total": 0}
+        )
 
     try:
         if sync_result is None:
@@ -357,7 +355,9 @@ async def run_full_analysis(
                     if holding.tradingsymbol not in PASSIVE_INSTRUMENTS
                 ]
                 holdings_needing_context = [
-                    holding for holding in equity_holdings if _holding_requires_refresh(holding=holding, settings=settings)
+                    holding
+                    for holding in equity_holdings
+                    if _holding_requires_refresh(holding=holding, settings=settings)
                 ]
                 if holdings_needing_context:
                     price_context_by_symbol = await _price_contexts(
@@ -433,12 +433,14 @@ async def run_full_analysis(
     }
 
     if event_callback is not None:
-        event_callback({
-            "type": "phase",
-            "phase": "analyst",
-            "label": f"Analysing {len(task_to_symbol)} holding(s)…",
-            "total": len(task_to_symbol),
-        })
+        event_callback(
+            {
+                "type": "phase",
+                "phase": "analyst",
+                "label": f"Analysing {len(task_to_symbol)} holding(s)…",
+                "total": len(task_to_symbol),
+            }
+        )
 
     ordered_verdicts: dict[str, StockVerdict] = {}
     completed = 0
@@ -471,21 +473,27 @@ async def run_full_analysis(
         completed += 1
         ordered_verdicts[verdict.tradingsymbol] = verdict
         if event_callback is not None:
-            event_callback({
-                "type": "analyst_complete",
-                "completed": completed,
-                "total": total,
-                "ticker": verdict.tradingsymbol,
-                "verdict": verdict.verdict.value,
-                "confidence": verdict.confidence,
-                "thesis_intact": verdict.thesis_intact,
-                "pnl_pct": verdict.pnl_pct,
-                "duration_seconds": verdict.analysis_duration_seconds,
-                "bull_case": verdict.bull_case,
-                "red_flags": verdict.red_flags,
-            })
+            event_callback(
+                {
+                    "type": "analyst_complete",
+                    "completed": completed,
+                    "total": total,
+                    "ticker": verdict.tradingsymbol,
+                    "verdict": verdict.verdict.value,
+                    "confidence": verdict.confidence,
+                    "thesis_intact": verdict.thesis_intact,
+                    "pnl_pct": verdict.pnl_pct,
+                    "duration_seconds": verdict.analysis_duration_seconds,
+                    "bull_case": verdict.bull_case,
+                    "red_flags": verdict.red_flags,
+                }
+            )
 
-    verdicts = [ordered_verdicts[holding.tradingsymbol] for holding in equity_holdings if holding.tradingsymbol in ordered_verdicts]
+    verdicts = [
+        ordered_verdicts[holding.tradingsymbol]
+        for holding in equity_holdings
+        if holding.tradingsymbol in ordered_verdicts
+    ]
 
     if event_callback is not None:
         event_callback({"type": "phase", "phase": "rebalance", "label": "Computing rebalancing actions…", "total": 0})
@@ -508,7 +516,9 @@ async def run_full_analysis(
             error=errors[0],
             retries_used=0,
             ticker=first_error.tradingsymbol if first_error else None,
-            partial_artifact_path=company_analysis_path(first_error.tradingsymbol, settings=settings) if first_error else None,
+            partial_artifact_path=company_analysis_path(first_error.tradingsymbol, settings=settings)
+            if first_error
+            else None,
         )
         raise FullRunFailed(
             phase="analyst",
@@ -516,7 +526,9 @@ async def run_full_analysis(
             retries_used=0,
             ticker=first_error.tradingsymbol if first_error else None,
             error_log_path=error_path,
-            partial_artifact_path=company_analysis_path(first_error.tradingsymbol, settings=settings) if first_error else None,
+            partial_artifact_path=company_analysis_path(first_error.tradingsymbol, settings=settings)
+            if first_error
+            else None,
         )
 
     for verdict in verdicts:
@@ -558,12 +570,8 @@ async def run_full_analysis(
             partial_artifact_path=exc.partial_artifact_path,
         ) from exc
 
-    total_buy_required = sum(
-        verdict.rebalance_rupees for verdict in verdicts if verdict.rebalance_action == "BUY"
-    )
-    total_sell_required = sum(
-        verdict.rebalance_rupees for verdict in verdicts if verdict.rebalance_action == "SELL"
-    )
+    total_buy_required = sum(verdict.rebalance_rupees for verdict in verdicts if verdict.rebalance_action == "BUY")
+    total_sell_required = sum(verdict.rebalance_rupees for verdict in verdicts if verdict.rebalance_action == "SELL")
     elapsed = time.perf_counter() - started
     logger.info(
         "Full analysis completed in %.1fs across %s analyst sub-agents with parallelism=%s",
@@ -628,7 +636,9 @@ async def run_single_company_analysis(
 
     price_context: dict[str, float | str] = {"52w_high": "N/A", "52w_low": "N/A", "current_vs_52w_high_pct": "N/A"}
     if holding.instrument_token > 0:
-        price_context = (await _price_contexts(settings=settings, holdings=[holding])).get(holding.tradingsymbol, price_context)
+        price_context = (await _price_contexts(settings=settings, holdings=[holding])).get(
+            holding.tradingsymbol, price_context
+        )
 
     _, verdict, from_cache = await get_company_artifact_and_verdict(
         holding=holding,
@@ -652,7 +662,7 @@ async def run_single_company_analysis(
     _merge_action_into_verdict(verdict, action)
 
     report_snapshot = PortfolioSnapshot(
-        fetched_at=snapshot.fetched_at if snapshot is not None else datetime.now(timezone.utc),
+        fetched_at=snapshot.fetched_at if snapshot is not None else datetime.now(UTC),
         total_value=portfolio_total_value,
         available_cash=portfolio_cash,
         holdings=[holding],
@@ -666,7 +676,7 @@ async def run_single_company_analysis(
         errors=[],
     )
     return PortfolioReport(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         portfolio_snapshot=report_snapshot,
         verdicts=[verdict],
         portfolio_summary=summary,

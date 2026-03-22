@@ -55,4 +55,3 @@ def test_etf_excluded() -> None:
     )
     assert len(actions) == 1
     assert actions[0].tradingsymbol == "HDFCBANK"
-

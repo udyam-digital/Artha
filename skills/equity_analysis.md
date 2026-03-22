@@ -44,4 +44,3 @@ For every stock analysed, provide:
 - Never confuse quarterly results with annual trends
 - Compare valuation to the company's own 3-year median, not just peers
 ---
-

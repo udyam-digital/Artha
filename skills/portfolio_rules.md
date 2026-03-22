@@ -2,7 +2,7 @@
 # Artha portfolio rules for Saksham's portfolio
 
 ## Portfolio philosophy
-Quality compounder investing. Long-term horizon 3-5 years. 
+Quality compounder investing. Long-term horizon 3-5 years.
 Concentrated but diversified — 12-20 stocks.
 
 ## Position sizing rules
@@ -10,7 +10,7 @@ Concentrated but diversified — 12-20 stocks.
 - Minimum actionable position: 2% of portfolio
 - Ideal position size: 5-8%
 
-## Rebalancing rules  
+## Rebalancing rules
 - Trigger rebalancing if drift > 2% from target for any position
 - Available cash threshold: deploy if > 5% of portfolio is in cash
 - Do not churn — only recommend action if there is clear fundamental reason
@@ -25,9 +25,8 @@ based on number of holdings. Flag this clearly in output.
 - LTCG exemption: first ₹1.25L of gains per year is tax-free
 
 ## Sectors to be aware of
-- LIQUIDBEES, NIFTYBEES, GOLDCASE, SILVERCASE are ETFs/passive — 
+- LIQUIDBEES, NIFTYBEES, GOLDCASE, SILVERCASE are ETFs/passive —
   treat separately from equity stock analysis
-- MF holdings are separate from equity portfolio — 
+- MF holdings are separate from equity portfolio —
   do not include in equity rebalancing calculations
 ---
-

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import api.main as api_main
 from application.reporting import ReportParseError
 from config import Settings
-from models import Holding, MFSnapshot, MFHolding, PortfolioReport, PortfolioSnapshot, StockVerdict, Verdict
+from models import Holding, MFHolding, MFSnapshot, PortfolioReport, PortfolioSnapshot, StockVerdict, Verdict
 from reliability import FullRunFailed
 
 
@@ -27,7 +27,7 @@ def make_settings(tmp_path: Path) -> Settings:
 
 def make_report() -> PortfolioReport:
     snapshot = PortfolioSnapshot(
-        fetched_at=datetime(2026, 3, 19, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 3, 19, tzinfo=UTC),
         total_value=125000.0,
         available_cash=5000.0,
         holdings=[
@@ -47,7 +47,7 @@ def make_report() -> PortfolioReport:
         ],
     )
     return PortfolioReport(
-        generated_at=datetime(2026, 3, 19, 12, 0, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 3, 19, 12, 0, tzinfo=UTC),
         portfolio_snapshot=snapshot,
         verdicts=[
             StockVerdict(
@@ -187,7 +187,7 @@ def test_price_history_uses_latest_report_holding(monkeypatch, tmp_path: Path) -
 def test_holdings_returns_401_with_login_url(monkeypatch, tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     snapshot = PortfolioSnapshot(
-        fetched_at=datetime(2026, 3, 19, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 3, 19, tzinfo=UTC),
         total_value=125000.0,
         available_cash=5000.0,
         holdings=[
@@ -207,7 +207,7 @@ def test_holdings_returns_401_with_login_url(monkeypatch, tmp_path: Path) -> Non
         ],
     )
     mf_snapshot = MFSnapshot(
-        fetched_at=datetime(2026, 3, 19, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 3, 19, tzinfo=UTC),
         total_value=1000.0,
         holdings=[
             MFHolding(
@@ -351,19 +351,21 @@ def test_run_endpoint_streams_structured_sse_events(monkeypatch, tmp_path: Path)
         if event_callback:
             event_callback({"type": "phase", "phase": "kite_sync", "label": "Syncing…", "total": 0})
             event_callback({"type": "phase", "phase": "analyst", "label": "Analysing 1 holding(s)…", "total": 1})
-            event_callback({
-                "type": "analyst_complete",
-                "completed": 1,
-                "total": 1,
-                "ticker": "KPITTECH",
-                "verdict": "BUY",
-                "confidence": "HIGH",
-                "thesis_intact": True,
-                "pnl_pct": 10.0,
-                "duration_seconds": 5.0,
-                "bull_case": "Demand is healthy.",
-                "red_flags": [],
-            })
+            event_callback(
+                {
+                    "type": "analyst_complete",
+                    "completed": 1,
+                    "total": 1,
+                    "ticker": "KPITTECH",
+                    "verdict": "BUY",
+                    "confidence": "HIGH",
+                    "thesis_intact": True,
+                    "pnl_pct": 10.0,
+                    "duration_seconds": 5.0,
+                    "bull_case": "Demand is healthy.",
+                    "red_flags": [],
+                }
+            )
             event_callback({"type": "phase", "phase": "rebalance", "label": "Rebalancing…", "total": 0})
             event_callback({"type": "phase", "phase": "summary", "label": "Summarising…", "total": 0})
         return report
@@ -519,12 +521,14 @@ def test_stream_run_cancels_background_task_when_closed(monkeypatch, tmp_path: P
 
     async def fake_run_and_save(request, settings, event_callback):
         del request, settings
-        event_callback({
-            "type": "phase",
-            "phase": "analyst",
-            "label": "Running",
-            "total": 1,
-        })
+        event_callback(
+            {
+                "type": "phase",
+                "phase": "analyst",
+                "label": "Running",
+                "total": 1,
+            }
+        )
         task_started.set()
         try:
             await asyncio.sleep(60)

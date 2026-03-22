@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -30,7 +30,7 @@ def test_negative_pnl() -> None:
 
 def test_portfolio_report_serialization() -> None:
     snapshot = PortfolioSnapshot(
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         total_value=1000.0,
         available_cash=100.0,
         holdings=[],
@@ -57,7 +57,7 @@ def test_portfolio_report_serialization() -> None:
         error=None,
     )
     report = PortfolioReport(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         portfolio_snapshot=snapshot,
         verdicts=[verdict],
         portfolio_summary="Summary",
@@ -71,14 +71,14 @@ def test_portfolio_report_serialization() -> None:
 
 def test_legacy_report_fields_are_rejected() -> None:
     snapshot = PortfolioSnapshot(
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         total_value=1000.0,
         available_cash=0.0,
         holdings=[],
     )
     with pytest.raises(ValidationError):
         PortfolioReport(
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             portfolio_snapshot=snapshot,
             verdicts=[],
             analyses=[],

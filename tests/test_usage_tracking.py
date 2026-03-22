@@ -6,18 +6,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from config import Settings
 import observability.usage as usage_tracking
+from config import Settings
 from observability.usage import (
     count_input_tokens_exact,
     estimate_input_tokens,
     format_run_summary,
     format_usage_summary,
     get_current_usage_run,
-    log_estimated_input_tokens,
     load_recent_run_summaries,
-    record_run_error,
+    log_estimated_input_tokens,
     record_anthropic_usage,
+    record_run_error,
     usage_run,
 )
 
@@ -106,7 +106,7 @@ def test_usage_run_updates_span_attributes_when_span_exists(tmp_path: Path, monk
     monkeypatch.setattr(usage_tracking, "emit_span", lambda name, attributes=None: None)
     response = SimpleNamespace(usage=SimpleNamespace(input_tokens=10, output_tokens=5))
 
-    with usage_run(settings=settings, command="run") as summary:
+    with usage_run(settings=settings, command="run"):
         record_anthropic_usage(
             settings=settings,
             label="portfolio_summary",
@@ -143,12 +143,15 @@ def test_record_anthropic_usage_without_active_run_still_writes_daily_log(tmp_pa
 def test_record_anthropic_usage_returns_none_when_usage_missing(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     response = SimpleNamespace()
-    assert record_anthropic_usage(
-        settings=settings,
-        label="missing_usage",
-        model="claude-haiku-4-5",
-        response=response,
-    ) is None
+    assert (
+        record_anthropic_usage(
+            settings=settings,
+            label="missing_usage",
+            model="claude-haiku-4-5",
+            response=response,
+        )
+        is None
+    )
 
 
 def test_estimated_input_tokens_helpers(tmp_path: Path, caplog) -> None:
@@ -319,10 +322,9 @@ def test_usage_run_preserves_exception_state_and_resets_context_on_summary_failu
 
     monkeypatch.setattr(usage_tracking, "_append_jsonl", flaky_append_jsonl)
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with usage_run(settings=settings, command="run") as summary:
-            assert usage_tracking.get_current_usage_run() is summary
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"), usage_run(settings=settings, command="run") as summary:
+        assert usage_tracking.get_current_usage_run() is summary
+        raise RuntimeError("boom")
 
     assert usage_tracking.get_current_usage_run() is None
     assert fake_span_cm.exited is True

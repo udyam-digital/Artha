@@ -10,6 +10,7 @@ try:
     def _tool_observe(fn: Any) -> Any:
         return _lf_observe(fn, as_type="tool", capture_input=True, capture_output=True)
 except ImportError:
+
     def _tool_observe(fn: Any) -> Any:  # type: ignore[misc]
         return fn
 

@@ -5,7 +5,6 @@ import asyncio
 import logging
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +20,20 @@ from application.orchestrator import (
 from application.research import DeepResearchOrchestrator
 from config import configure_logging, get_settings
 from kite.runtime import KiteSyncResult, load_same_day_kite_sync_result, sync_kite_data
-from models import CompanyAnalysisArtifact, Holding, PortfolioReport, PortfolioSnapshot, ResearchDigest, RebalancingAction, StockVerdict
+from kite.tools import ToolExecutionError
+from models import (
+    Holding,
+    PortfolioReport,
+    PortfolioSnapshot,
+    RebalancingAction,
+    ResearchDigest,
+    StockVerdict,
+)
 from observability.telemetry import initialize_telemetry, shutdown_telemetry
 from observability.usage import format_run_summary, format_usage_summary, load_recent_run_summaries, usage_run
 from persistence.store import load_latest_portfolio_snapshot, save_report
+from rebalance import PASSIVE_INSTRUMENTS
 from reliability import FullRunFailed
-from rebalance import PASSIVE_INSTRUMENTS, calculate_rebalancing_actions
-from kite.tools import ToolExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +227,9 @@ def print_kite_sync_result(result: KiteSyncResult) -> None:
     print(f"MF snapshot saved to: {result.mf_artifact}")
 
 
-def print_research_result(digest: ResearchDigest, digest_path: Path, holding_paths: list[Path], index_path: Path) -> None:
+def print_research_result(
+    digest: ResearchDigest, digest_path: Path, holding_paths: list[Path], index_path: Path
+) -> None:
     print("ARTHA DEEP RESEARCH")
     print(f"Equity reports: {len(digest.equity_reports)}")
     print(f"MF reports:     {len(digest.mf_reports)}")
@@ -351,7 +359,9 @@ async def handle_kite_sync() -> int:
 
 async def handle_kite_login() -> int:
     result = await sync_kite_data(settings=get_settings())
-    print_kite_login_result(result.auth_artifact or result.portfolio_artifact, result.auth_url, result.portfolio_artifact)
+    print_kite_login_result(
+        result.auth_artifact or result.portfolio_artifact, result.auth_url, result.portfolio_artifact
+    )
     print(f"MF snapshot saved to: {result.mf_artifact}")
     return 0
 
@@ -431,13 +441,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("holdings", help="Print the current holdings table without an LLM call")
-    analyst_parser = subparsers.add_parser("analyst", help="Run one standalone analyst report card without Kite or Artha summary")
+    analyst_parser = subparsers.add_parser(
+        "analyst", help="Run one standalone analyst report card without Kite or Artha summary"
+    )
     analyst_parser.add_argument("--ticker", required=True, help="Ticker to analyse")
     analyst_parser.add_argument("--exchange", default="NSE", help="Exchange for standalone analyst mode, default NSE")
-    compare_parser = subparsers.add_parser("compare-providers", help="Fetch Yahoo Finance and NSE India data into separate JSON files")
+    compare_parser = subparsers.add_parser(
+        "compare-providers", help="Fetch Yahoo Finance and NSE India data into separate JSON files"
+    )
     compare_parser.add_argument("--ticker", required=True, help="Ticker to fetch")
     compare_parser.add_argument("--exchange", default="NSE", help="Exchange suffix for Alpha Vantage, default NSE")
-    subparsers.add_parser("kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot")
+    subparsers.add_parser(
+        "kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot"
+    )
     subparsers.add_parser("kite-sync", help="Fetch fresh equity and MF snapshots from Kite MCP and save them locally")
     subparsers.add_parser("rebalance", help="Generate a rebalancing report from the latest saved local equity snapshot")
     subparsers.add_parser("research", help="Run deep web research on the latest saved equity and MF snapshots")

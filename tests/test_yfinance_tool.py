@@ -7,7 +7,6 @@ import pytest
 import kite.tools as kite_tools
 from config import Settings
 
-
 pytestmark = pytest.mark.anyio
 
 
@@ -37,22 +36,24 @@ def make_settings(tmp_path):
 
 async def test_get_yfinance_snapshot_valid(tmp_path, monkeypatch) -> None:
     payload = {
-        "result": json.dumps({
-            "currentPrice": 2500.0,
-            "fiftyTwoWeekLow": 1800.0,
-            "fiftyTwoWeekHigh": 3000.0,
-            "trailingPE": 45.0,
-            "forwardPE": 38.0,
-            "priceToBook": 12.0,
-            "revenueGrowth": 0.18,
-            "earningsGrowth": 0.22,
-            "profitMargins": 0.34,
-            "numberOfAnalystOpinions": 12,
-            "targetMeanPrice": 2750.0,
-            "targetMedianPrice": 2700.0,
-            "sector": "Financial Services",
-            "industry": "Capital Markets",
-        })
+        "result": json.dumps(
+            {
+                "currentPrice": 2500.0,
+                "fiftyTwoWeekLow": 1800.0,
+                "fiftyTwoWeekHigh": 3000.0,
+                "trailingPE": 45.0,
+                "forwardPE": 38.0,
+                "priceToBook": 12.0,
+                "revenueGrowth": 0.18,
+                "earningsGrowth": 0.22,
+                "profitMargins": 0.34,
+                "numberOfAnalystOpinions": 12,
+                "targetMeanPrice": 2750.0,
+                "targetMedianPrice": 2700.0,
+                "sector": "Financial Services",
+                "industry": "Capital Markets",
+            }
+        )
     }
     monkeypatch.setattr(kite_tools, "get_settings", lambda: make_settings(tmp_path))
     monkeypatch.setattr(kite_tools, "load_yfinance_server_definition", lambda settings: object())

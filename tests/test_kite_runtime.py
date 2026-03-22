@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from config import Settings
-from models import MFHolding, MFSnapshot, Holding, PortfolioSnapshot
-from persistence.store import save_mf_snapshot, save_portfolio_snapshot
 from kite.runtime import load_same_day_kite_sync_result
+from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
+from persistence.store import save_mf_snapshot, save_portfolio_snapshot
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -64,7 +64,7 @@ def make_mf_snapshot(fetched_at: datetime) -> MFSnapshot:
 
 def test_load_same_day_kite_sync_result_returns_cached_snapshots(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    fetched_at = datetime.now(timezone.utc)
+    fetched_at = datetime.now(UTC)
     save_portfolio_snapshot(make_portfolio_snapshot(fetched_at), settings=settings)
     save_mf_snapshot(make_mf_snapshot(fetched_at), settings=settings)
 
@@ -77,7 +77,7 @@ def test_load_same_day_kite_sync_result_returns_cached_snapshots(tmp_path: Path)
 
 def test_load_same_day_kite_sync_result_returns_none_for_stale_snapshots(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    fetched_at = datetime.now(timezone.utc) - timedelta(days=1)
+    fetched_at = datetime.now(UTC) - timedelta(days=1)
     save_portfolio_snapshot(make_portfolio_snapshot(fetched_at), settings=settings)
     save_mf_snapshot(make_mf_snapshot(fetched_at), settings=settings)
 

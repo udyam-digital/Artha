@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 from anthropic import AsyncAnthropic
 
@@ -11,7 +11,6 @@ from analysis.analyst import generate_company_artifact
 from config import Settings
 from models import CompanyAnalysisArtifact, CompanyDataCard, Holding, StockVerdict
 from persistence.store import load_company_analysis_artifact
-
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +103,7 @@ def artifact_to_stock_verdict(
 
 def is_company_artifact_fresh(*, artifact: CompanyDataCard | CompanyAnalysisArtifact, settings: Settings) -> bool:
     max_age = timedelta(days=settings.company_analysis_max_age_days)
-    age = datetime.now(timezone.utc) - artifact.generated_at
+    age = datetime.now(UTC) - artifact.generated_at
     return age <= max_age
 
 

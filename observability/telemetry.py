@@ -7,7 +7,6 @@ from typing import Any
 
 from config import Settings
 
-
 logger = logging.getLogger(__name__)
 
 _TELEMETRY_INITIALIZED = False
@@ -17,7 +16,7 @@ _PROVIDER: Any | None = None
 
 
 def _langfuse_auth_header(settings: Settings) -> str:
-    token = f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode("utf-8")
+    token = f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode()
     encoded = base64.b64encode(token).decode("ascii")
     return f"Basic {encoded}"
 

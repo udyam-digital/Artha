@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 import pytest
 
 import reliability
 from reliability import FullRunFailed, RetryFailure, is_transient_error, run_with_retries
-
 
 pytestmark = pytest.mark.anyio
 
@@ -57,7 +54,7 @@ async def test_run_with_retries_requires_positive_attempts() -> None:
 
 
 def test_is_transient_error_detects_common_cases() -> None:
-    assert is_transient_error(asyncio.TimeoutError()) is True
+    assert is_transient_error(TimeoutError()) is True
     assert is_transient_error(httpx.TransportError("connection reset")) is True
     assert is_transient_error(RuntimeError("service unavailable")) is True
     assert is_transient_error(ValueError("validation failed")) is False

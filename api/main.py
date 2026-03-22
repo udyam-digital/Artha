@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import AsyncIterator
 from urllib.error import URLError
 
 from fastapi import FastAPI, HTTPException
@@ -14,6 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from application.orchestrator import (
+    RunEvent,
+    build_rebalance_only_report,
+    run_full_analysis,
+    run_single_company_analysis,
+)
 from application.reporting import (
     HoldingNotFoundError,
     ReportListItem,
@@ -28,10 +34,8 @@ from config import Settings, get_settings
 from kite.runtime import build_kite_client, sync_kite_data
 from kite.tools import kite_get_portfolio, kite_get_profile, kite_login, profile_requires_login
 from models import MFSnapshot, PortfolioReport, PortfolioSnapshot
-from application.orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
 from persistence.store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_report
 from reliability import FullRunFailed
-
 
 APP_VERSION = "1.0"
 STREAM_ERROR_CODE = 1001
@@ -97,15 +101,18 @@ def create_app() -> FastAPI:
                 live_status="fallback",
                 live_error=_http_exception_to_live_error(exc),
             )
-        except (OSError, TimeoutError, URLError):
+        except (OSError, TimeoutError, URLError) as exc:
             snapshot = _load_latest_portfolio_snapshot_or_none(settings)
             if snapshot is None:
-                raise HTTPException(status_code=503, detail="Failed to reach Kite MCP.")
+                raise HTTPException(status_code=503, detail="Failed to reach Kite MCP.") from exc
             return HoldingsResponse(
                 **snapshot.model_dump(),
                 mf_snapshot=mf_snapshot,
                 live_status="fallback",
-                live_error={"message": "Live Kite holdings unavailable. Showing the latest saved snapshot.", "login_url": None},
+                live_error={
+                    "message": "Live Kite holdings unavailable. Showing the latest saved snapshot.",
+                    "login_url": None,
+                },
             )
         return HoldingsResponse(**snapshot.model_dump(), mf_snapshot=mf_snapshot, live_status="live", live_error=None)
 
@@ -172,8 +179,8 @@ def create_app() -> FastAPI:
                 {
                     "instrument_token": holding.instrument_token,
                     "interval": "day",
-                    "from_date": (datetime.now(timezone.utc) - timedelta(days=365)).date().isoformat(),
-                    "to_date": datetime.now(timezone.utc).date().isoformat(),
+                    "from_date": (datetime.now(UTC) - timedelta(days=365)).date().isoformat(),
+                    "to_date": datetime.now(UTC).date().isoformat(),
                 },
             )
         candles = _normalize_candles(raw_history)
@@ -232,7 +239,9 @@ def _http_exception_to_live_error(exc: HTTPException) -> dict[str, str | None]:
     detail = exc.detail
     if isinstance(detail, dict):
         return {
-            "message": str(detail.get("message") or "Live Kite holdings unavailable. Showing the latest saved snapshot."),
+            "message": str(
+                detail.get("message") or "Live Kite holdings unavailable. Showing the latest saved snapshot."
+            ),
             "login_url": str(detail.get("login_url")) if detail.get("login_url") else None,
         }
     if isinstance(detail, str):
@@ -305,7 +314,7 @@ async def _stream_run(request: RunRequest, settings: Settings) -> AsyncIterator[
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=0.5)
                 yield _sse_from_run_event(event)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
         while not queue.empty():
@@ -341,18 +350,21 @@ async def _run_and_save(request: RunRequest, settings: Settings, event_callback)
 def _sse_from_run_event(event: RunEvent) -> str:
     if event["type"] == "phase":
         return _sse("phase", {"phase": event["phase"], "label": event["label"], "total": event["total"]})
-    return _sse("progress", {
-        "completed": event["completed"],
-        "total": event["total"],
-        "ticker": event["ticker"],
-        "verdict": event["verdict"],
-        "confidence": event["confidence"],
-        "thesis_intact": event["thesis_intact"],
-        "pnl_pct": event["pnl_pct"],
-        "duration_seconds": event["duration_seconds"],
-        "bull_case": event["bull_case"],
-        "red_flags": event["red_flags"],
-    })
+    return _sse(
+        "progress",
+        {
+            "completed": event["completed"],
+            "total": event["total"],
+            "ticker": event["ticker"],
+            "verdict": event["verdict"],
+            "confidence": event["confidence"],
+            "thesis_intact": event["thesis_intact"],
+            "pnl_pct": event["pnl_pct"],
+            "duration_seconds": event["duration_seconds"],
+            "bull_case": event["bull_case"],
+            "red_flags": event["red_flags"],
+        },
+    )
 
 
 def _sse(event: str, payload: dict[str, object]) -> str:

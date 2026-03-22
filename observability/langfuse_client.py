@@ -18,7 +18,7 @@ def _build_langfuse(
     public_key: str,
     secret_key: str,
     host: str,
-) -> "Langfuse | None":
+) -> Langfuse | None:
     if not public_key or not secret_key:
         return None
     try:
@@ -36,7 +36,7 @@ def _build_langfuse(
         return None
 
 
-def get_langfuse(settings: Settings) -> "Langfuse | None":
+def get_langfuse(settings: Settings) -> Langfuse | None:
     return _build_langfuse(
         settings.langfuse_public_key,
         settings.langfuse_secret_key,
@@ -53,7 +53,7 @@ def init_langfuse(settings: Settings) -> None:
 
 
 def score_active_trace(
-    lf: "Langfuse",
+    lf: Langfuse,
     judge_result: dict[str, Any],
     ticker: str,
     factual_result: dict[str, Any] | None = None,

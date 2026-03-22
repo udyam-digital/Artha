@@ -1,4 +1,5 @@
 """Artha MCP server — exposes portfolio reports and analyst artifacts to Claude Desktop."""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,7 @@ from application.reporting import (
     list_report_items,
 )
 from config import get_settings
-from persistence.store import company_analysis_path, load_company_analysis_artifact
+from persistence.store import load_company_analysis_artifact
 
 mcp = FastMCP("artha")
 _ARTHA_ROOT = Path(__file__).resolve().parent
@@ -128,10 +129,7 @@ def get_analyst_artifact(ticker: str) -> str:
     try:
         artifact = load_company_analysis_artifact(ticker.upper())
     except FileNotFoundError:
-        return (
-            f"No analyst artifact found for {ticker.upper()}. "
-            "Run run_artha_analyst(ticker) to generate one."
-        )
+        return f"No analyst artifact found for {ticker.upper()}. Run run_artha_analyst(ticker) to generate one."
     except Exception as exc:
         return f"Error reading artifact for {ticker.upper()}: {exc}"
     return artifact.model_dump_json(indent=2, by_alias=True)
@@ -183,8 +181,10 @@ def run_artha_analysis(ticker: str = "", rebalance_only: bool = False) -> str:
         report = get_latest_report(settings)
         counts: dict[str, int] = {"BUY": 0, "HOLD": 0, "SELL": 0}
         for v in report.verdicts:
-            bucket = "BUY" if v.verdict.value in ("BUY", "STRONG_BUY") else (
-                "SELL" if v.verdict.value in ("SELL", "STRONG_SELL") else "HOLD"
+            bucket = (
+                "BUY"
+                if v.verdict.value in ("BUY", "STRONG_BUY")
+                else ("SELL" if v.verdict.value in ("SELL", "STRONG_SELL") else "HOLD")
             )
             counts[bucket] += 1
         return (

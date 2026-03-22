@@ -3,15 +3,21 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
 from pydantic import BaseModel
 
 from config import Settings, get_settings
-from models import CompanyAnalysisArtifact, CompanyDataCard, MFSnapshot, PortfolioReport, PortfolioSnapshot, ResearchDigest
-
+from models import (
+    CompanyAnalysisArtifact,
+    CompanyDataCard,
+    MFSnapshot,
+    PortfolioReport,
+    PortfolioSnapshot,
+    ResearchDigest,
+)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -51,7 +57,7 @@ def _timestamped_path(base_dir: Path, stem: str) -> Path:
 
 
 def model_now_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
 
 def save_portfolio_snapshot(snapshot: PortfolioSnapshot, settings: Settings | None = None) -> Path:
@@ -142,7 +148,7 @@ def save_judge_scores(
     path = _judge_scores_path(ticker, settings=settings)
     payload = {
         "ticker": ticker.upper(),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "quality_scores": quality_scores,
         "factual_scores": factual_scores,
         "combined_overall": round(combined_overall, 2),

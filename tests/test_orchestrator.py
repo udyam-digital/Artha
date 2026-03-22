@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import application.orchestrator as orchestrator
-from reliability import FullRunFailed, RetryFailure
 from config import Settings
 from kite.runtime import KiteSyncResult
-from models import Holding, MacroContext, MFSnapshot, MFHolding, PortfolioSnapshot, RebalancingAction, StockVerdict
-
+from models import Holding, MacroContext, MFHolding, MFSnapshot, PortfolioSnapshot, RebalancingAction, StockVerdict
+from reliability import FullRunFailed, RetryFailure
 
 pytestmark = pytest.mark.anyio
 
@@ -261,6 +259,7 @@ async def test_run_full_analysis_degrades_when_macro_context_fails(tmp_path: Pat
 
     monkeypatch.setattr(orchestrator, "sync_kite_data_with_client", fake_sync_with_client)
     monkeypatch.setattr(orchestrator, "build_kite_client", lambda settings: FakeKiteClient())
+
     async def fake_kite_get_price_history(kite_client, tradingsymbol, instrument_token):
         return {"52w_high": 120.0, "52w_low": 80.0, "current_vs_52w_high_pct": -10.0}
 
@@ -907,7 +906,9 @@ async def test_run_full_analysis_fails_fast_on_summary_retry_failure(tmp_path: P
     assert exc_info.value.phase == "portfolio_summary"
 
 
-async def test_run_full_analysis_with_saved_sync_result_still_fetches_price_context(tmp_path: Path, monkeypatch) -> None:
+async def test_run_full_analysis_with_saved_sync_result_still_fetches_price_context(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = make_settings(tmp_path)
     snapshot = PortfolioSnapshot(
         fetched_at="2026-03-18T10:00:00Z",
@@ -1210,6 +1211,7 @@ async def test_run_full_analysis_emits_structured_events_in_order(tmp_path: Path
 
 def test_build_rebalance_only_report_excludes_passive_instruments() -> None:
     from models import PortfolioSnapshot
+
     snapshot = PortfolioSnapshot(
         fetched_at="2026-03-18T10:00:00Z",
         total_value=10_000.0,

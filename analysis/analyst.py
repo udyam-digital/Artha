@@ -4,16 +4,16 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import instructor
 from anthropic import AsyncAnthropic
 
+from analysis.data_card import build_company_data_card
 from analysis.fiscal import get_fiscal_context
 from analysis.judge import judge_factual_grounding, judge_report_card
-from observability.langfuse_client import get_langfuse, score_active_trace
 from config import Settings
 from kite.tools import (
     get_nse_india_provider_payload,
@@ -21,12 +21,23 @@ from kite.tools import (
     get_yfinance_provider_payload,
     get_yfinance_snapshot,
 )
-from analysis.data_card import build_company_data_card
-from models import AnalystInputPayload, AnalystReportCard, CompanyAnalysisArtifact, CompanyDataCard, Holding, StockVerdict
-from observability.usage import count_input_tokens_exact, estimate_input_tokens, log_estimated_input_tokens, record_anthropic_usage
+from models import (
+    AnalystInputPayload,
+    AnalystReportCard,
+    CompanyAnalysisArtifact,
+    CompanyDataCard,
+    Holding,
+    StockVerdict,
+)
+from observability.langfuse_client import get_langfuse, score_active_trace
+from observability.usage import (
+    count_input_tokens_exact,
+    estimate_input_tokens,
+    log_estimated_input_tokens,
+    record_anthropic_usage,
+)
 from persistence.store import save_company_analysis_artifact, save_judge_scores
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
-
 
 logger = logging.getLogger(__name__)
 
@@ -110,40 +121,74 @@ async def _log_input_tokens(
 
 _SOURCE_MAP_KEY_ALIASES: dict[str, str] = {
     # revenue_cagr aliases
-    "revenue": "revenue_cagr", "revenue_growth": "revenue_cagr", "revenue_yoy": "revenue_cagr",
-    "q3_fy26_revenue": "revenue_cagr", "q2_fy26_revenue": "revenue_cagr", "q4_fy26_revenue": "revenue_cagr",
-    "q3_revenue": "revenue_cagr", "revenue_cagr_source": "revenue_cagr",
+    "revenue": "revenue_cagr",
+    "revenue_growth": "revenue_cagr",
+    "revenue_yoy": "revenue_cagr",
+    "q3_fy26_revenue": "revenue_cagr",
+    "q2_fy26_revenue": "revenue_cagr",
+    "q4_fy26_revenue": "revenue_cagr",
+    "q3_revenue": "revenue_cagr",
+    "revenue_cagr_source": "revenue_cagr",
     # eps_cagr aliases
-    "eps": "eps_cagr", "eps_growth": "eps_cagr", "net_profit": "eps_cagr",
-    "q3_fy26_netprofit": "eps_cagr", "q3_diluted_eps": "eps_cagr", "eps_cagr_source": "eps_cagr",
-    "q3_fy26_eps": "eps_cagr", "netprofit": "eps_cagr",
+    "eps": "eps_cagr",
+    "eps_growth": "eps_cagr",
+    "net_profit": "eps_cagr",
+    "q3_fy26_netprofit": "eps_cagr",
+    "q3_diluted_eps": "eps_cagr",
+    "eps_cagr_source": "eps_cagr",
+    "q3_fy26_eps": "eps_cagr",
+    "netprofit": "eps_cagr",
     # roce aliases
-    "roce_source": "roce", "return_on_capital": "roce",
+    "roce_source": "roce",
+    "return_on_capital": "roce",
     # roe aliases
-    "roe_source": "roe", "return_on_equity": "roe",
+    "roe_source": "roe",
+    "return_on_equity": "roe",
     # pe aliases
-    "pe_ratio": "pe", "pe_source": "pe", "trailing_pe": "pe",
+    "pe_ratio": "pe",
+    "pe_source": "pe",
+    "trailing_pe": "pe",
     # peg aliases
-    "peg_ratio": "peg", "peg_source": "peg",
+    "peg_ratio": "peg",
+    "peg_source": "peg",
     # fcf_yield aliases
-    "fcf": "fcf_yield", "free_cash_flow": "fcf_yield", "fcf_yield_source": "fcf_yield",
+    "fcf": "fcf_yield",
+    "free_cash_flow": "fcf_yield",
+    "fcf_yield_source": "fcf_yield",
     # debt_to_equity aliases
-    "de_ratio": "debt_to_equity", "debt_equity": "debt_to_equity", "d_e_ratio": "debt_to_equity",
+    "de_ratio": "debt_to_equity",
+    "debt_equity": "debt_to_equity",
+    "d_e_ratio": "debt_to_equity",
     "debt_to_equity_source": "debt_to_equity",
     # fair_value aliases
-    "fair_value_range": "fair_value", "fair_value_source": "fair_value", "valuation": "fair_value",
+    "fair_value_range": "fair_value",
+    "fair_value_source": "fair_value",
+    "valuation": "fair_value",
     # risk_1 aliases
-    "risk": "risk_1", "primary_risk": "risk_1", "risk_1_source": "risk_1",
+    "risk": "risk_1",
+    "primary_risk": "risk_1",
+    "risk_1_source": "risk_1",
     # analyst_target aliases
-    "target_price": "analyst_target", "consensus_target": "analyst_target",
+    "target_price": "analyst_target",
+    "consensus_target": "analyst_target",
     # market_share aliases
-    "market_position": "market_share", "competitive_position": "market_share",
+    "market_position": "market_share",
+    "competitive_position": "market_share",
 }
 
 REQUIRED_SOURCE_MAP_KEYS = [
-    "revenue_cagr", "eps_cagr", "roce", "roe", "pe", "peg",
-    "fcf_yield", "debt_to_equity", "fair_value", "risk_1",
-    "analyst_target", "market_share",
+    "revenue_cagr",
+    "eps_cagr",
+    "roce",
+    "roe",
+    "pe",
+    "peg",
+    "fcf_yield",
+    "debt_to_equity",
+    "fair_value",
+    "risk_1",
+    "analyst_target",
+    "market_share",
 ]
 
 
@@ -188,6 +233,7 @@ def _extract_source_map_from_raw(raw_text: str) -> dict[str, str]:
         pass
     # Fallback: try to find source_map in partial JSON
     import re
+
     match = re.search(r'"source_map"\s*:\s*\{([^}]+)\}', raw_text, re.DOTALL)
     if match:
         try:
@@ -250,7 +296,9 @@ async def _coerce_report_card_with_instructor(
         if raw_source_map:
             if not report_card.source_map:
                 report_card.source_map = raw_source_map
-                logger.info("[%s] re-injected source_map (%d entries) from raw text", holding.tradingsymbol, len(raw_source_map))
+                logger.info(
+                    "[%s] re-injected source_map (%d entries) from raw text", holding.tradingsymbol, len(raw_source_map)
+                )
             else:
                 # Merge any missing keys from raw
                 for k, v in raw_source_map.items():
@@ -261,7 +309,9 @@ async def _coerce_report_card_with_instructor(
         # Re-inject data_sources if instructor dropped them
         if not report_card.data_sources and raw_data_sources:
             report_card.data_sources = raw_data_sources
-            logger.info("[%s] re-injected data_sources (%d URLs) from raw text", holding.tradingsymbol, len(raw_data_sources))
+            logger.info(
+                "[%s] re-injected data_sources (%d URLs) from raw text", holding.tradingsymbol, len(raw_data_sources)
+            )
         elif raw_data_sources:
             # Merge any missing URLs
             existing = set(report_card.data_sources)
@@ -544,7 +594,10 @@ def _backfill_source_map_from_urls(
 
     # Define heuristic URL→metric mappings
     url_metric_hints: list[tuple[list[str], list[str]]] = [
-        (["screener.in", "stockanalysis.com", "moneycontrol.com/financials"], ["roce", "roe", "pe", "debt_to_equity", "fcf_yield", "peg"]),
+        (
+            ["screener.in", "stockanalysis.com", "moneycontrol.com/financials"],
+            ["roce", "roe", "pe", "debt_to_equity", "fcf_yield", "peg"],
+        ),
         (["trendlyne.com", "tickertape.in"], ["pe", "peg", "fair_value"]),
         (["livemint.com", "bseindia.com", "nseindia.com"], ["revenue_cagr", "eps_cagr"]),
         (["results", "earnings", "quarterly", "q3", "q2", "q4"], ["revenue_cagr", "eps_cagr"]),
@@ -577,6 +630,117 @@ def _sync_source_map_to_data_sources(report_card: AnalystReportCard) -> AnalystR
     return report_card
 
 
+def _overwrite_report_card_with_data_card(
+    report_card: AnalystReportCard,
+    data_card_sections: dict,
+) -> tuple[AnalystReportCard, dict[str, str]]:
+    """Overwrite specific string fields in AnalystReportCard with exact data card values.
+    Returns updated report_card and a dict of what was overwritten (for the judge)."""
+    overwritten: dict[str, str] = {}
+
+    # From quality section
+    roe = data_card_sections.get("quality", {}).get("roe_proxy_pct")
+    if roe is not None:
+        report_card.quality.roe = f"{roe:.1f}% (yfinance API)"
+        overwritten["quality.roe"] = report_card.quality.roe
+
+    roce = data_card_sections.get("quality", {}).get("roce_proxy_pct")
+    if roce is not None:
+        report_card.quality.roce = f"{roce:.1f}% (yfinance API)"
+        overwritten["quality.roce"] = report_card.quality.roce
+
+    de = data_card_sections.get("financials", {}).get("debt_to_equity")
+    if de is not None:
+        report_card.quality.debt_to_equity = f"{de:.2f}x (yfinance API)"
+        overwritten["quality.debt_to_equity"] = report_card.quality.debt_to_equity
+
+    # From valuation section
+    pe = data_card_sections.get("valuation", {}).get("trailing_pe")
+    if pe is not None:
+        report_card.valuation.pe = f"{pe:.1f}x TTM (yfinance API)"
+        overwritten["valuation.pe"] = report_card.valuation.pe
+
+    sector_pe = data_card_sections.get("valuation", {}).get("sector_pe")
+    if sector_pe is not None:
+        report_card.valuation.sector_pe = f"{sector_pe:.1f}x (NSE India API)"
+        overwritten["valuation.sector_pe"] = report_card.valuation.sector_pe
+
+    peg = data_card_sections.get("valuation", {}).get("peg_ratio")
+    if peg is not None:
+        report_card.valuation.peg = f"{peg:.2f} (yfinance API)"
+        overwritten["valuation.peg"] = report_card.valuation.peg
+
+    # From nse_quarterly — revenue_cagr and eps_cagr
+    fiscal = get_fiscal_context()
+    nse_q = data_card_sections.get("nse_quarterly", {})
+    rev_yoy = nse_q.get("revenue_yoy_pct")
+    if rev_yoy is not None:
+        report_card.growth_engine.revenue_cagr = f"{rev_yoy:.1f}% YoY ({fiscal['latest_quarter']}) (NSE India API)"
+        overwritten["growth_engine.revenue_cagr"] = report_card.growth_engine.revenue_cagr
+
+    # EPS: use latest quarter EPS from quarters list
+    quarters = nse_q.get("quarters", [])
+    latest_eps = quarters[0].get("eps") if quarters else None
+    eps_qoq = nse_q.get("eps_qoq_pct")
+    if latest_eps is not None and eps_qoq is not None:
+        report_card.growth_engine.eps_cagr = f"₹{latest_eps:.2f} EPS latest quarter, {eps_qoq:.1f}% QoQ (NSE India API)"
+        overwritten["growth_engine.eps_cagr"] = report_card.growth_engine.eps_cagr
+    elif latest_eps is not None:
+        report_card.growth_engine.eps_cagr = f"₹{latest_eps:.2f} EPS latest quarter (NSE India API)"
+        overwritten["growth_engine.eps_cagr"] = report_card.growth_engine.eps_cagr
+
+    # From price_data — timing
+    vs_200dma = data_card_sections.get("price_data", {}).get("vs_200dma_pct")
+    if vs_200dma is not None:
+        direction = "above" if vs_200dma > 0 else "below"
+        report_card.timing.price_vs_200dma = f"{vs_200dma:.1f}% {direction} 200 DMA (yfinance API)"
+        overwritten["timing.price_vs_200dma"] = report_card.timing.price_vs_200dma
+
+    # FII trend from delivery_pct + institutional_holding
+    delivery_pct = data_card_sections.get("quality", {}).get("delivery_pct")
+    inst_pct = data_card_sections.get("ownership", {}).get("institutional_holding_pct")
+    if delivery_pct is not None:
+        signal = data_card_sections.get("technical_signals", {}).get("delivery_signal", "Medium")
+        inst_str = f", institutional holding {inst_pct:.1f}%" if inst_pct is not None else ""
+        report_card.timing.fii_trend = f"Delivery {delivery_pct:.1f}% ({signal} conviction){inst_str} (NSE India API)"
+        overwritten["timing.fii_trend"] = report_card.timing.fii_trend
+
+    return report_card, overwritten
+
+
+def _compute_fair_value(data_card_sections: dict) -> list[float] | None:
+    """Compute fair value range from Python-verified data card values.
+    Returns [low, high] or None if insufficient data."""
+    valuation = data_card_sections.get("valuation", {})
+    financials = data_card_sections.get("financials", {})
+
+    forward_eps = financials.get("forward_eps") or financials.get("trailing_eps")
+    trailing_pe = valuation.get("trailing_pe")
+    sector_pe = valuation.get("sector_pe")
+    analyst_target = valuation.get("analyst_target_mean")
+
+    if not forward_eps or forward_eps <= 0:
+        return None
+
+    # Base PE = lower of trailing PE and sector PE (conservative anchor)
+    base_pe = None
+    if trailing_pe and sector_pe:
+        base_pe = min(trailing_pe, sector_pe * 1.1)  # cap at 10% sector premium
+    elif sector_pe:
+        base_pe = sector_pe
+    elif trailing_pe:
+        base_pe = trailing_pe
+
+    if not base_pe or base_pe <= 0:
+        return None
+
+    fair_mid = round(forward_eps * base_pe, 1)
+    fair_low = round(fair_mid * 0.85, 1)
+    fair_high = round(max(fair_mid * 1.15, analyst_target or 0), 1)
+
+    return [fair_low, fair_high]
+
+
 def _fix_internal_consistency(report_card: AnalystReportCard) -> AnalystReportCard:
     """Deterministic post-processing to fix common LLM internal inconsistencies."""
     # 1. Recalculate margin_of_safety from fair_value_range and current_price
@@ -606,16 +770,16 @@ def _fix_internal_consistency(report_card: AnalystReportCard) -> AnalystReportCa
 
 
 DATA_CARD_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
-    "pe":             ("valuation",     "trailing_pe",          "yfinance API"),
-    "roe":            ("quality",       "roe_proxy_pct",        "yfinance API"),
-    "roce":           ("quality",       "roce_proxy_pct",       "yfinance API"),
-    "debt_to_equity": ("financials",    "debt_to_equity",       "yfinance API"),
-    "peg":            ("valuation",     "peg_ratio",            "yfinance API"),
-    "revenue_cagr":   ("nse_quarterly", "revenue_yoy_pct",      "NSE India API"),
-    "eps_cagr":       ("nse_quarterly", "eps_qoq_pct",          "NSE India API"),
-    "fcf_yield":      ("financials",    "ebitda_margin_pct",    "yfinance API"),
-    "analyst_target": ("valuation",     "analyst_target_mean",  "yfinance API"),
-    "market_share":   ("meta",          "index_memberships",    "NSE India API"),
+    "pe": ("valuation", "trailing_pe", "yfinance API"),
+    "roe": ("quality", "roe_proxy_pct", "yfinance API"),
+    "roce": ("quality", "roce_proxy_pct", "yfinance API"),
+    "debt_to_equity": ("financials", "debt_to_equity", "yfinance API"),
+    "peg": ("valuation", "peg_ratio", "yfinance API"),
+    "revenue_cagr": ("nse_quarterly", "revenue_yoy_pct", "NSE India API"),
+    "eps_cagr": ("nse_quarterly", "eps_qoq_pct", "NSE India API"),
+    "fcf_yield": ("financials", "ebitda_margin_pct", "yfinance API"),
+    "analyst_target": ("valuation", "analyst_target_mean", "yfinance API"),
+    "market_share": ("meta", "index_memberships", "NSE India API"),
 }
 
 
@@ -650,7 +814,7 @@ def _build_company_artifact(
     yfinance_data: dict[str, object] | None = None,
 ) -> CompanyAnalysisArtifact:
     return CompanyAnalysisArtifact(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         source_model=config.analyst_model,
         exchange=holding.exchange,
         ticker=holding.tradingsymbol.upper(),
@@ -668,7 +832,7 @@ def _build_company_data_card_artifact(
     macro_context: str = "",
 ) -> CompanyDataCard:
     return CompanyDataCard(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         source_model=config.analyst_model,
         exchange=holding.exchange,
         ticker=holding.tradingsymbol.upper(),
@@ -684,6 +848,7 @@ try:
     def _analyst_observe(fn: Any) -> Any:
         return _lf_observe(fn, as_type="generation", capture_input=False, capture_output=False)
 except ImportError:
+
     def _analyst_observe(fn: Any) -> Any:  # type: ignore[misc]
         return fn
 
@@ -790,11 +955,61 @@ async def generate_company_artifact(
         + analyst_input.model_dump_json(by_alias=True)
     )
 
+    # Build explicit injection block from data_card_sections
+    injected_values: list[str] = []
+    _pe = data_card_sections.get("valuation", {}).get("trailing_pe")
+    _sector_pe = data_card_sections.get("valuation", {}).get("sector_pe")
+    _pe_premium = data_card_sections.get("valuation", {}).get("pe_premium_to_sector_pct")
+    _roe = data_card_sections.get("quality", {}).get("roe_proxy_pct")
+    _roce = data_card_sections.get("quality", {}).get("roce_proxy_pct")
+    _de = data_card_sections.get("financials", {}).get("debt_to_equity")
+    _rev_yoy = data_card_sections.get("nse_quarterly", {}).get("revenue_yoy_pct")
+    _rev_qoq = data_card_sections.get("nse_quarterly", {}).get("revenue_qoq_pct")
+    _vs_200dma = data_card_sections.get("price_data", {}).get("vs_200dma_pct")
+    _alpha = data_card_sections.get("price_data", {}).get("alpha_vs_nifty_52w_pct")
+    _delivery = data_card_sections.get("quality", {}).get("delivery_pct")
+    if _pe:
+        injected_values.append(f"- Trailing PE: {_pe:.1f}x (TTM, yfinance)")
+    if _sector_pe:
+        injected_values.append(f"- Sector PE: {_sector_pe:.1f}x (NSE India)")
+    if _pe_premium:
+        injected_values.append(f"- PE vs sector: {_pe_premium:+.1f}%")
+    if _roe:
+        injected_values.append(f"- ROE: {_roe:.1f}% (yfinance)")
+    if _roce:
+        injected_values.append(f"- ROCE: {_roce:.1f}% (yfinance)")
+    if _de is not None:
+        injected_values.append(f"- Debt/Equity: {_de:.2f}x (yfinance)")
+    if _rev_yoy:
+        injected_values.append(f"- Revenue YoY ({fiscal['latest_quarter']}): {_rev_yoy:.1f}% (NSE India)")
+    if _rev_qoq:
+        injected_values.append(f"- Revenue QoQ: {_rev_qoq:.1f}% (NSE India)")
+    if _vs_200dma:
+        injected_values.append(f"- Price vs 200 DMA: {_vs_200dma:.1f}% (yfinance)")
+    if _alpha:
+        injected_values.append(f"- Alpha vs Nifty 52w: {_alpha:.1f}% (yfinance)")
+    if _delivery:
+        injected_values.append(f"- Delivery %: {_delivery:.1f}% (NSE India)")
+    if injected_values:
+        injected_block = (
+            "\n\n## PRE-COMPUTED FACTS — USE THESE EXACT VALUES IN YOUR REPORT CARD\n"
+            "Do NOT compute your own versions. Copy these directly:\n"
+            + "\n".join(injected_values)
+            + "\n\nUse these exact values in your report card to ensure internal consistency.\n"
+        )
+    else:
+        injected_block = ""
+    user_prompt = user_prompt + injected_block
+
     if _retry_context:
         user_prompt = _retry_context + "\n\n" + user_prompt
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
     system_prompt = skills_content.replace("{macro_context}", macro_context)
-    logger.info("[%s] analyst prompt token estimate: ~%s", holding.tradingsymbol, estimate_input_tokens(messages=messages, system=system_prompt))
+    logger.info(
+        "[%s] analyst prompt token estimate: ~%s",
+        holding.tradingsymbol,
+        estimate_input_tokens(messages=messages, system=system_prompt),
+    )
     searches_used = 0
     all_collected_urls: list[str] = []
 
@@ -814,6 +1029,9 @@ async def generate_company_artifact(
             "messages": messages,
             "tools": tools,
         }
+        # Force at least one tool call on the first iteration so Tavily searches always run
+        if searches_used == 0:
+            call_kwargs["tool_choice"] = {"type": "any"}
         response = await raw_client.messages.create(**call_kwargs)
         _log_response_usage(
             label=f"[{holding.tradingsymbol}] analyst",
@@ -853,7 +1071,54 @@ async def generate_company_artifact(
                 raw_text=_extract_text(response),
             )
             report_card = _fix_internal_consistency(report_card)
+            report_card, overwritten_fields = _overwrite_report_card_with_data_card(report_card, data_card_sections)
+            # Apply computed fair value range
+            computed_fv = _compute_fair_value(data_card_sections)
+            if computed_fv:
+                report_card.valuation.fair_value_range = computed_fv
+                overwritten_fields["valuation.fair_value_range"] = str(computed_fv)
+                # Update source_map
+                if report_card.source_map.get("fair_value") in ("Not available", "", None):
+                    report_card.source_map["fair_value"] = "yfinance API + NSE India API"
+                # Recalculate margin of safety
+                price = report_card.stock_snapshot.current_price
+                if price > 0:
+                    midpoint = (computed_fv[0] + computed_fv[1]) / 2
+                    mos_pct = (midpoint - price) / price * 100
+                    report_card.valuation.margin_of_safety = (
+                        f"+{mos_pct:.1f}% (discount)" if mos_pct >= 0 else f"{mos_pct:.1f}% (premium)"
+                    )
+                    overwritten_fields["valuation.margin_of_safety"] = report_card.valuation.margin_of_safety
             report_card = _inject_data_card_sources(report_card, data_card_sections)
+            # Inject real Tavily URLs collected during tool calls (filter to relevant ones only)
+            if all_collected_urls:
+                ticker_lower = holding.tradingsymbol.lower()
+                relevant_urls = [
+                    u
+                    for u in all_collected_urls
+                    if ticker_lower in u.lower()
+                    or any(
+                        kw in u.lower()
+                        for kw in [
+                            "screener.in",
+                            "moneycontrol.com",
+                            "trendlyne.com",
+                            "tickertape.in",
+                            "bseindia.com",
+                            "nseindia.com",
+                            "stockanalysis.com",
+                        ]
+                    )
+                ]
+                # Fall back to all URLs if filtering leaves nothing
+                urls_to_add = relevant_urls if relevant_urls else list(dict.fromkeys(all_collected_urls))[:5]
+                unique_urls = list(dict.fromkeys(urls_to_add))
+                existing = set(report_card.data_sources)
+                for url in unique_urls:
+                    if url not in existing:
+                        report_card.data_sources.append(url)
+                        existing.add(url)
+                report_card = _backfill_source_map_from_urls(report_card, unique_urls)
             report_card = _sync_source_map_to_data_sources(report_card)
             _log_response_usage(
                 label=f"[{holding.tradingsymbol}] analyst_structured",
@@ -925,6 +1190,7 @@ async def generate_company_artifact(
                 },
             }
             data_card_context = json.dumps(data_card_summary, ensure_ascii=True)
+            overwritten_fields_context = json.dumps(overwritten_fields, indent=2, ensure_ascii=True)
 
             judge_result = await judge_report_card(
                 report_card_json=report_card_json,
@@ -932,6 +1198,7 @@ async def generate_company_artifact(
                 config=config,
                 client=raw_client,
                 data_card_context=data_card_context,
+                overwritten_fields_context=overwritten_fields_context,
             )
             factual_result = await judge_factual_grounding(
                 report_card_json=report_card_json,
@@ -939,6 +1206,7 @@ async def generate_company_artifact(
                 config=config,
                 client=raw_client,
                 data_card_context=data_card_context,
+                overwritten_fields_context=overwritten_fields_context,
             )
             if judge_result:
                 logger.info(
@@ -1034,7 +1302,9 @@ async def generate_company_artifact(
                 if all_collected_urls:
                     unique_urls = list(dict.fromkeys(all_collected_urls))  # dedupe, preserve order
                     retry_parts.append("")
-                    retry_parts.append("Source URLs available from your searches (USE THESE in source_map and data_sources):")
+                    retry_parts.append(
+                        "Source URLs available from your searches (USE THESE in source_map and data_sources):"
+                    )
                     for url in unique_urls:
                         retry_parts.append(f"- {url}")
                 retry_ctx = "\n".join(retry_parts)
@@ -1214,7 +1484,7 @@ async def export_provider_comparison_files(
     config: Settings,
 ) -> list[Path]:
     normalized_ticker = str(ticker).strip().upper()
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    fetched_at = datetime.now(UTC).isoformat()
     yahoo_task = get_yfinance_provider_payload(normalized_ticker)
     nse_task = get_nse_india_provider_payload(normalized_ticker)
     yahoo_payload, nse_payload = await asyncio.gather(yahoo_task, nse_task)

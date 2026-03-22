@@ -2,9 +2,9 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+from application.research import DeepResearchOrchestrator, ResearchExecutionError
 from config import Settings
 from models import Holding, MFHolding, MFSnapshot, PortfolioSnapshot
-from application.research import DeepResearchOrchestrator, ResearchExecutionError
 
 
 class FakeAnthropicClient:

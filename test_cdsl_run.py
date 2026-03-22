@@ -1,10 +1,14 @@
-import asyncio, json
+import asyncio
+import json
 from pathlib import Path
+
 from anthropic import AsyncAnthropic
+
 from analysis.analyst import generate_company_artifact
 from config import get_settings
+from kite.tools import get_macro_context, get_yfinance_snapshot
 from models import Holding
-from kite.tools import get_yfinance_snapshot, get_macro_context
+
 
 async def main():
     config = get_settings()
@@ -32,7 +36,9 @@ async def main():
         "price_change_1y_pct": -12.0,
     }
     macro_ctx = await get_macro_context()
-    macro_str = f"CPI: {macro_ctx.cpi_headline_yoy}%, IIP: {macro_ctx.iip_growth_latest}%, GDP: {macro_ctx.gdp_growth_latest}%"
+    macro_str = (
+        f"CPI: {macro_ctx.cpi_headline_yoy}%, IIP: {macro_ctx.iip_growth_latest}%, GDP: {macro_ctx.gdp_growth_latest}%"
+    )
     artifact = await generate_company_artifact(
         holding=holding,
         price_context=price_context,
@@ -41,15 +47,21 @@ async def main():
         client=client,
         config=config,
     )
-    print("=== CDSL CompanyDataCard ===")
-    card_dict = artifact.model_dump(mode="json")
-    # Print key sections
-    print(f"VERDICT: {card_dict['analysis']['final_verdict']}")
-    print(f"PRICE DATA: {json.dumps(card_dict['price_data'], indent=2)}")
-    print(f"VALUATION: {json.dumps(card_dict['valuation'], indent=2)}")
-    print(f"QUALITY: {json.dumps(card_dict['quality'], indent=2)}")
-    print(f"NSE QUARTERLY: {json.dumps(card_dict['nse_quarterly'], indent=2)}")
-    print(f"SOURCE MAP: {json.dumps(card_dict['analysis']['source_map'], indent=2)}")
-    print(f"DATA SOURCES: {json.dumps(card_dict['analysis']['data_sources'], indent=2)}")
+    card = artifact.model_dump(mode="json")
+    print("=== VERDICT ===")
+    print(json.dumps(card["analysis"]["final_verdict"], indent=2))
+    print("\n=== KEY QUALITY FIELDS (should be Python-overwritten) ===")
+    print("roe:", card["analysis"]["quality"]["roe"])
+    print("roce:", card["analysis"]["quality"]["roce"])
+    print("pe:", card["analysis"]["valuation"]["pe"])
+    print("sector_pe:", card["analysis"]["valuation"]["sector_pe"])
+    print("revenue_cagr:", card["analysis"]["growth_engine"]["revenue_cagr"])
+    print("eps_cagr:", card["analysis"]["growth_engine"]["eps_cagr"])
+    print("price_vs_200dma:", card["analysis"]["timing"]["price_vs_200dma"])
+    print("fair_value_range:", card["analysis"]["valuation"]["fair_value_range"])
+    print("margin_of_safety:", card["analysis"]["valuation"]["margin_of_safety"])
+    print("\n=== SOURCE MAP ===")
+    print(json.dumps(card["analysis"]["source_map"], indent=2))
+
 
 asyncio.run(main())

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -60,6 +60,7 @@ def _parse_shareholding_history(sh_data: Any) -> list[dict]:
     # Sort chronologically (oldest first)
     try:
         from datetime import datetime as _dt
+
         history.sort(key=lambda r: _dt.strptime(str(r["date"]), "%d-%b-%Y"))
     except Exception:
         pass
@@ -93,7 +94,7 @@ def build_company_data_card(
     nse_quarterly, quality, ownership, dividends_corporate, technical_signals.
     The 'analysis' key is NOT populated here — the LLM fills that.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # ── NSE sub-dicts ──────────────────────────────────────────────────────────
     details: dict = nse_raw.get("details") or {}
@@ -113,26 +114,19 @@ def build_company_data_card(
     nse_dp: dict = trade_info.get("securityWiseDP") or {} if isinstance(trade_info, dict) else {}
 
     nse_financial_results: list = (
-        corporate_info.get("financial_results", {}).get("data") or []
-        if isinstance(corporate_info, dict)
-        else []
+        corporate_info.get("financial_results", {}).get("data") or [] if isinstance(corporate_info, dict) else []
     )
     nse_shareholdings: dict = (
-        corporate_info.get("shareholdings_patterns", {}).get("data") or {}
-        if isinstance(corporate_info, dict)
-        else {}
+        corporate_info.get("shareholdings_patterns", {}).get("data") or {} if isinstance(corporate_info, dict) else {}
     )
     nse_corp_actions: list = (
-        corporate_info.get("corporate_actions", {}).get("data") or []
-        if isinstance(corporate_info, dict)
-        else []
+        corporate_info.get("corporate_actions", {}).get("data") or [] if isinstance(corporate_info, dict) else []
     )
 
     # ── Derived scalar helpers ─────────────────────────────────────────────────
     cmp = _safe_float(yf_raw.get("currentPrice") or yf_raw.get("regularMarketPrice"))
     trailing_eps = _safe_float(yf_raw.get("trailingEps") or yf_raw.get("epsTrailingTwelveMonths"))
     book_value = _safe_float(yf_raw.get("bookValue"))
-    ev = _safe_float(yf_raw.get("enterpriseValue"))
     ev_ebitda_ratio = _safe_float(yf_raw.get("enterpriseToEbitda"))
     ebitda_val = _safe_float(yf_raw.get("ebitda"))
     total_cash = _safe_float(yf_raw.get("totalCash"))
@@ -155,15 +149,8 @@ def build_company_data_card(
         "ticker": ticker.upper(),
         "exchange": exchange.upper(),
         "isin": nse_info.get("isin") or nse_metadata.get("isin"),
-        "company_name": (
-            nse_info.get("companyName")
-            or nse_info.get("symbol")
-            or ticker.upper()
-        ),
-        "listing_date": (
-            nse_info.get("listingDate")
-            or nse_metadata.get("listingDate")
-        ),
+        "company_name": (nse_info.get("companyName") or nse_info.get("symbol") or ticker.upper()),
+        "listing_date": (nse_info.get("listingDate") or nse_metadata.get("listingDate")),
         "face_value": _safe_float(nse_security_info.get("faceValue")),
         "sector": nse_industry_info.get("sector") or nse_industry_info.get("macro"),
         "industry": nse_industry_info.get("industry"),
@@ -273,7 +260,9 @@ def build_company_data_card(
     # ── 4. CardFinancials ──────────────────────────────────────────────────────
     # NSE market cap is in crores — convert to rupees (* 1e7)
     nse_mkt_cap_crore = _safe_float(nse_trade_data.get("totalMarketCap"))
-    market_cap = _round2(nse_mkt_cap_crore * 1e7) if nse_mkt_cap_crore is not None else _safe_float(yf_raw.get("marketCap"))
+    market_cap = (
+        _round2(nse_mkt_cap_crore * 1e7) if nse_mkt_cap_crore is not None else _safe_float(yf_raw.get("marketCap"))
+    )
     ffmc_crore = _safe_float(nse_trade_data.get("ffmc"))
     free_float_market_cap = _round2(ffmc_crore * 1e7) if ffmc_crore is not None else None
 
@@ -306,33 +295,40 @@ def build_company_data_card(
         "total_debt": total_debt,
         "net_cash": net_cash,
         "debt_to_equity": _safe_float(yf_raw.get("debtToEquity")),
-        "revenue_growth_pct": _round2((_safe_float(yf_raw.get("revenueGrowth")) or 0) * 100) if _safe_float(yf_raw.get("revenueGrowth")) is not None else None,
-        "earnings_growth_pct": _round2((_safe_float(yf_raw.get("earningsGrowth")) or 0) * 100) if _safe_float(yf_raw.get("earningsGrowth")) is not None else None,
+        "revenue_growth_pct": _round2((_safe_float(yf_raw.get("revenueGrowth")) or 0) * 100)
+        if _safe_float(yf_raw.get("revenueGrowth")) is not None
+        else None,
+        "earnings_growth_pct": _round2((_safe_float(yf_raw.get("earningsGrowth")) or 0) * 100)
+        if _safe_float(yf_raw.get("earningsGrowth")) is not None
+        else None,
         "book_value_per_share": book_value,
     }
 
     # ── 5. CardNSEQuarterly ────────────────────────────────────────────────────
     quarters_parsed: list[dict] = []
-    for entry in (nse_financial_results if isinstance(nse_financial_results, list) else []):
+    for entry in nse_financial_results if isinstance(nse_financial_results, list) else []:
         if not isinstance(entry, dict):
             continue
         period = str(entry.get("to_date") or entry.get("from_date") or "").strip()
         if not period:
             continue
-        quarters_parsed.append({
-            "period": period,
-            "_sort_key": period,
-            "income": _safe_float(entry.get("income")),
-            "pat": _safe_float(entry.get("proLossAftTax")),
-            "eps": _safe_float(entry.get("reDilEPS")),
-            "pbt": _safe_float(entry.get("reProLossBefTax")),
-            "audited": str(entry.get("audited") or "").strip() or None,
-        })
+        quarters_parsed.append(
+            {
+                "period": period,
+                "_sort_key": period,
+                "income": _safe_float(entry.get("income")),
+                "pat": _safe_float(entry.get("proLossAftTax")),
+                "eps": _safe_float(entry.get("reDilEPS")),
+                "pbt": _safe_float(entry.get("reProLossBefTax")),
+                "audited": str(entry.get("audited") or "").strip() or None,
+            }
+        )
 
     # Sort by date descending (most recent first) — try parsing "31 Dec 2025" format
     def _sort_quarter(q: dict) -> str:
         try:
             from datetime import datetime as _dt
+
             return _dt.strptime(q["_sort_key"], "%d %b %Y").strftime("%Y%m%d")
         except Exception:
             return q["_sort_key"]
@@ -340,10 +336,7 @@ def build_company_data_card(
     quarters_parsed.sort(key=_sort_quarter, reverse=True)
 
     # Remove the internal sort key
-    quarters_clean = [
-        {k: v for k, v in q.items() if k != "_sort_key"}
-        for q in quarters_parsed
-    ]
+    quarters_clean = [{k: v for k, v in q.items() if k != "_sort_key"} for q in quarters_parsed]
 
     revenue_qoq_pct: float | None = None
     revenue_yoy_pct: float | None = None
@@ -459,6 +452,7 @@ def build_company_data_card(
             return None
         try:
             from datetime import datetime as _dt
+
             return _dt.utcfromtimestamp(v).strftime("%Y-%m-%d")
         except Exception:
             return None
@@ -467,7 +461,8 @@ def build_company_data_card(
     next_earnings_date = _epoch_to_date(yf_raw.get("earningsTimestampStart"))
 
     recent_actions = [
-        dict(entry) for entry in (nse_corp_actions[:5] if isinstance(nse_corp_actions, list) else [])
+        dict(entry)
+        for entry in (nse_corp_actions[:5] if isinstance(nse_corp_actions, list) else [])
         if isinstance(entry, dict)
     ]
 

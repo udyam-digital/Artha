@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,6 @@ from models import (
 from observability.usage import log_estimated_input_tokens, record_anthropic_usage
 from persistence.store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_research_digest
 from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
-
 
 logger = logging.getLogger(__name__)
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
@@ -80,7 +79,7 @@ class DeepResearchOrchestrator:
 
         digest_text = await self._build_digest_text(equity_reports, mf_reports, errors)
         digest = ResearchDigest(
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             equity_reports=equity_reports,
             mf_reports=mf_reports,
             portfolio_digest=digest_text,
@@ -123,7 +122,7 @@ class DeepResearchOrchestrator:
         )
         payload = self._extract_tagged_json(raw_text, "equity_research", holding.tradingsymbol)
         report = EquityResearchArtifact(
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             identifier=str(payload.get("identifier", holding.tradingsymbol)).upper(),
             title=str(payload.get("title", holding.tradingsymbol)),
             data_freshness=str(payload.get("data_freshness", "Unknown")),
@@ -171,7 +170,7 @@ class DeepResearchOrchestrator:
         )
         payload = self._extract_tagged_json(raw_text, "mf_research", holding.fund)
         report = MFResearchArtifact(
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             identifier=str(payload.get("identifier", holding.tradingsymbol or holding.fund)),
             title=str(payload.get("title", holding.fund)),
             data_freshness=str(payload.get("data_freshness", "Unknown")),
@@ -235,7 +234,9 @@ class DeepResearchOrchestrator:
                             {
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": json.dumps({"error": f"Unsupported tool requested: {block.name}"}, ensure_ascii=True),
+                                "content": json.dumps(
+                                    {"error": f"Unsupported tool requested: {block.name}"}, ensure_ascii=True
+                                ),
                                 "is_error": True,
                             }
                         )

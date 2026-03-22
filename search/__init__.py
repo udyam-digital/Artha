@@ -1,1 +1,7 @@
-from search.tavily import tavily_search, get_tavily_search_tool_definition, DEFAULT_TAVILY_MAX_RESULTS
+from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+
+__all__ = [
+    "DEFAULT_TAVILY_MAX_RESULTS",
+    "get_tavily_search_tool_definition",
+    "tavily_search",
+]

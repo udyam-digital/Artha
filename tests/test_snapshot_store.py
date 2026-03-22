@@ -1,6 +1,5 @@
-from pathlib import Path
-
 import json
+from pathlib import Path
 
 from config import Settings
 from models import CompanyAnalysisArtifact, Holding, MFHolding, MFSnapshot, PortfolioSnapshot, ResearchDigest

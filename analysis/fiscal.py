@@ -60,10 +60,10 @@ def get_fiscal_context(today: date | None = None) -> dict[str, str]:
     prev_fy_label = f"FY{prev_fy % 100:02d}"
 
     return {
-        "current_fy": fy_label,                                     # "FY26"
-        "current_quarter": f"Q{current_q} {fy_label}",             # "Q4 FY26"
-        "latest_quarter": f"Q{latest_q} {latest_fy_label}",        # "Q3 FY26"
-        "prev_quarter": f"Q{prev_q} {prev_fy_label}",              # "Q2 FY26"
-        "search_year": str(today.year),                             # "2026"
-        "today_date": today.strftime("%B %d, %Y"),                  # "March 21, 2026"
+        "current_fy": fy_label,  # "FY26"
+        "current_quarter": f"Q{current_q} {fy_label}",  # "Q4 FY26"
+        "latest_quarter": f"Q{latest_q} {latest_fy_label}",  # "Q3 FY26"
+        "prev_quarter": f"Q{prev_q} {prev_fy_label}",  # "Q2 FY26"
+        "search_year": str(today.year),  # "2026"
+        "today_date": today.strftime("%B %d, %Y"),  # "March 21, 2026"
     }

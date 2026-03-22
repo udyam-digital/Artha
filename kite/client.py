@@ -17,7 +17,6 @@ from config import (
     get_settings,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -46,9 +45,7 @@ def load_kite_server_definition(settings: Settings | None = None) -> MCPServerDe
         )
 
     if not settings.kite_mcp_command.strip():
-        raise ToolExecutionError(
-            "Kite MCP is not configured for Artha. Set KITE_MCP_URL or KITE_MCP_COMMAND in .env."
-        )
+        raise ToolExecutionError("Kite MCP is not configured for Artha. Set KITE_MCP_URL or KITE_MCP_COMMAND in .env.")
 
     return MCPServerDefinition(
         transport="stdio",
@@ -92,7 +89,7 @@ class MCPToolClient:
         self._stack = AsyncExitStack()
         self._session = None
 
-    async def __aenter__(self) -> "MCPToolClient":
+    async def __aenter__(self) -> MCPToolClient:
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client

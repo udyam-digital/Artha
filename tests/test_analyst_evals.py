@@ -1,8 +1,7 @@
-import pytest
 from tests.test_analyst import make_report_card_payload
 
-
 # ── Scoring helpers ──────────────────────────────────────────────────────────
+
 
 def score_growth_engine(payload: dict) -> tuple[int, list[str]]:
     """
@@ -39,9 +38,7 @@ def score_growth_engine(payload: dict) -> tuple[int, list[str]]:
     )
     if has_recent_decline and growth_score > 6:
         score -= 25
-        failures.append(
-            f"growth_score={growth_score} is too high given company_risks mention recent decline"
-        )
+        failures.append(f"growth_score={growth_score} is too high given company_risks mention recent decline")
 
     return max(score, 0), failures
 
@@ -54,12 +51,8 @@ def score_risk_matrix(payload: dict) -> tuple[int, list[str]]:
     score = 100
     failures = []
 
-    all_risks = (
-        rm.get("structural_risks", [])
-        + rm.get("cyclical_risks", [])
-        + rm.get("company_risks", [])
-    )
-    all_text = " ".join(str(r).lower() for r in all_risks)
+    all_risks = rm.get("structural_risks", []) + rm.get("cyclical_risks", []) + rm.get("company_risks", [])
+    _ = " ".join(str(r).lower() for r in all_risks)
 
     if len(all_risks) < 3:
         score -= 30
@@ -109,14 +102,10 @@ def score_verdict_consistency(payload: dict) -> tuple[int, list[str]]:
 
     if verdict in ("BUY", "ADD") and timing_signal == "Risky" and risk_level == "High":
         score -= 40
-        failures.append(
-            f"Verdict={verdict} is inconsistent with timing={timing_signal} and risk={risk_level}"
-        )
+        failures.append(f"Verdict={verdict} is inconsistent with timing={timing_signal} and risk={risk_level}")
     if verdict == "EXIT" and timing_signal == "Favorable" and risk_level == "Low":
         score -= 40
-        failures.append(
-            f"Verdict={verdict} is inconsistent with timing={timing_signal} and risk={risk_level}"
-        )
+        failures.append(f"Verdict={verdict} is inconsistent with timing={timing_signal} and risk={risk_level}")
 
     return max(score, 0), failures
 
@@ -132,12 +121,7 @@ def eval_report_card(payload: dict) -> dict:
     verdict_score, verdict_failures = score_verdict_consistency(payload)
 
     # Weighted: growth most important (catching the FY25 stale data bug), then risk
-    weighted = int(
-        growth_score * 0.35
-        + risk_score * 0.25
-        + sources_score * 0.20
-        + verdict_score * 0.20
-    )
+    weighted = int(growth_score * 0.35 + risk_score * 0.25 + sources_score * 0.20 + verdict_score * 0.20)
     return {
         "overall": weighted,
         "growth": {"score": growth_score, "failures": growth_failures},
@@ -148,6 +132,7 @@ def eval_report_card(payload: dict) -> dict:
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
+
 
 def make_stale_growth_payload() -> dict:
     """Simulates a Haiku output that used historical FY25 CAGR — the CDSL bug."""
@@ -193,6 +178,7 @@ def make_missing_competitor_payload() -> dict:
 
 
 # ── Eval tests ────────────────────────────────────────────────────────────────
+
 
 def test_eval_detects_stale_growth_cagr():
     """Eval must catch the FY25 CAGR anchoring bug (the exact CDSL failure)."""
@@ -246,8 +232,7 @@ def test_eval_overall_score_stale_output_is_low():
     """A stale, thin output (the CDSL bug case) should have overall < 65."""
     result = eval_report_card(make_stale_growth_payload())
     assert result["overall"] < 65, (
-        f"Expected overall score to be low for stale output. Got {result['overall']}\n"
-        f"Detail: {result}"
+        f"Expected overall score to be low for stale output. Got {result['overall']}\nDetail: {result}"
     )
 
 
@@ -255,6 +240,5 @@ def test_eval_overall_score_good_output_is_high():
     """A well-constructed current-trajectory output should have overall >= 75."""
     result = eval_report_card(make_current_growth_payload())
     assert result["overall"] >= 75, (
-        f"Expected overall score to be high for good output. Got {result['overall']}\n"
-        f"Detail: {result}"
+        f"Expected overall score to be high for good output. Got {result['overall']}\nDetail: {result}"
     )

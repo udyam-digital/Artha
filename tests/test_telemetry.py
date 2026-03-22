@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
 import builtins
+from pathlib import Path
 
-from config import Settings
 import observability.telemetry as telemetry
-from observability.telemetry import build_exporter_config, emit_span, initialize_telemetry, shutdown_telemetry, start_span
+from config import Settings
+from observability.telemetry import (
+    build_exporter_config,
+    emit_span,
+    initialize_telemetry,
+    shutdown_telemetry,
+    start_span,
+)
 
 
 def make_settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -44,6 +50,7 @@ def test_build_exporter_config_uses_generic_otlp_when_langfuse_missing(tmp_path:
     assert backend == "otlp"
     assert endpoint == "https://otel.example.com/custom"
     assert headers == {"x-test": "1"}
+
 
 def test_build_exporter_config_returns_none_when_disabled_or_unconfigured(tmp_path: Path) -> None:
     disabled = make_settings(tmp_path, TELEMETRY_ENABLED=False)

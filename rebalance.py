@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from models import Holding, RebalancingAction
 
-
 PASSIVE_INSTRUMENTS = {"LIQUIDBEES", "NIFTYBEES", "GOLDCASE", "SILVERCASE"}
 
 
@@ -72,4 +71,3 @@ def calculate_rebalancing_actions(
         )
 
     return actions
-

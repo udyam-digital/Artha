@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +81,7 @@ class ArthaAgent:
         errors: list[str],
     ) -> PortfolioReport:
         snapshot = snapshot or PortfolioSnapshot(
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=datetime.now(UTC),
             total_value=0.0,
             available_cash=0.0,
             holdings=[],
@@ -92,7 +92,7 @@ class ArthaAgent:
             available_cash=snapshot.available_cash,
         )
         return PortfolioReport(
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             portfolio_snapshot=snapshot,
             verdicts=[],
             portfolio_summary=raw_text or "Artha could not parse a valid final JSON response.",

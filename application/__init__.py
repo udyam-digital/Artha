@@ -1,6 +1,5 @@
 from .agent import ArthaAgent
 from .orchestrator import RunEvent, build_rebalance_only_report, run_full_analysis, run_single_company_analysis
-from .research import DeepResearchOrchestrator, ResearchExecutionError
 from .reporting import (
     HoldingNotFoundError,
     ReportAccessError,
@@ -12,6 +11,7 @@ from .reporting import (
     get_report_by_id,
     list_report_items,
 )
+from .research import DeepResearchOrchestrator, ResearchExecutionError
 
 __all__ = [
     "ArthaAgent",

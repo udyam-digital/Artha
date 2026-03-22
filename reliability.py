@@ -5,11 +5,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import httpx
 from anthropic import APIConnectionError, APIStatusError, RateLimitError
-
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +42,9 @@ class FullRunFailed(RuntimeError):
 
 
 def is_transient_error(exc: Exception) -> bool:
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, httpx.TransportError)):
+    if isinstance(exc, asyncio.TimeoutError | TimeoutError | httpx.TimeoutException | httpx.TransportError):
         return True
-    if isinstance(exc, (APIConnectionError, RateLimitError)):
+    if isinstance(exc, APIConnectionError | RateLimitError):
         return True
     if isinstance(exc, APIStatusError):
         return exc.status_code == 429 or exc.status_code >= 500
