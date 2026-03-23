@@ -280,27 +280,14 @@ async def test_get_macro_context_uses_mcp_primary(monkeypatch) -> None:
     assert result.gdp_growth_latest == pytest.approx(7.82)
 
 
-async def test_get_macro_context_falls_back_to_http_on_mcp_failure(monkeypatch) -> None:
-    """get_macro_context() falls back to direct HTTP when MoSPI MCP raises."""
+async def test_get_macro_context_returns_error_context_on_mcp_failure(monkeypatch) -> None:
+    """get_macro_context() returns empty macro context with fetch_errors when MoSPI MCP raises."""
     import kite.tools as kite_tools
 
     monkeypatch.setattr(kite_tools, "_MACRO_CONTEXT_CACHE", {})
 
     mock_mcp_module = MagicMock()
     mock_mcp_module.get_macro_context_via_mcp = AsyncMock(side_effect=RuntimeError("MCP unreachable"))
-
-    async def fake_cpi(_client):
-        return 5.0, "Jan 2025"
-
-    async def fake_iip(_client):
-        return 3.0, "Jan 2025"
-
-    async def fake_gdp(_client):
-        return 6.5, "Jan 2025"
-
-    monkeypatch.setattr(kite_tools, "_fetch_cpi_context", fake_cpi)
-    monkeypatch.setattr(kite_tools, "_fetch_iip_context", fake_iip)
-    monkeypatch.setattr(kite_tools, "_fetch_gdp_context", fake_gdp)
 
     with (
         patch.dict("sys.modules", {"providers.mospi": mock_mcp_module}),
@@ -312,6 +299,7 @@ async def test_get_macro_context_falls_back_to_http_on_mcp_failure(monkeypatch) 
         )
         result = await kite_tools.get_macro_context()
 
-    assert result.cpi_headline_yoy == pytest.approx(5.0)
-    assert result.iip_growth_latest == pytest.approx(3.0)
-    assert result.gdp_growth_latest == pytest.approx(6.5)
+    assert result.cpi_headline_yoy is None
+    assert result.iip_growth_latest is None
+    assert result.gdp_growth_latest is None
+    assert result.fetch_errors == ["mospi_mcp: MCP unreachable"]
