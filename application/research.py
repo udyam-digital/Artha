@@ -22,7 +22,7 @@ from models import (
 )
 from observability.usage import log_estimated_input_tokens, record_anthropic_usage
 from persistence.store import load_latest_mf_snapshot, load_latest_portfolio_snapshot, save_research_digest
-from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+from providers.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
 logger = logging.getLogger(__name__)
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"

@@ -37,7 +37,7 @@ from observability.usage import (
     record_anthropic_usage,
 )
 from persistence.store import save_company_analysis_artifact, save_judge_scores
-from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+from providers.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
 logger = logging.getLogger(__name__)
 
@@ -829,14 +829,12 @@ def _build_company_data_card_artifact(
     holding: Holding,
     config: Settings,
     data_card_sections: dict,
-    macro_context: str = "",
 ) -> CompanyDataCard:
     return CompanyDataCard(
         generated_at=datetime.now(UTC),
         source_model=config.analyst_model,
         exchange=holding.exchange,
         ticker=holding.tradingsymbol.upper(),
-        macro_context=macro_context,
         analysis=report_card,
         **data_card_sections,
     )
@@ -857,7 +855,6 @@ except ImportError:
 async def generate_company_artifact(
     holding: Holding,
     price_context: dict[str, float | str],
-    macro_context: str,
     skills_content: str,
     client: AsyncAnthropic | Any,
     config: Settings,
@@ -884,7 +881,6 @@ async def generate_company_artifact(
                     "52w_high": price_context.get("52w_high"),
                     "52w_low": price_context.get("52w_low"),
                     "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct"),
-                    "macro_context": macro_context,
                 },
                 metadata={"ticker": holding.tradingsymbol},
             )
@@ -931,7 +927,6 @@ async def generate_company_artifact(
             "52w_low": price_context.get("52w_low", 0.0),
             "current_vs_52w_high_pct": price_context.get("current_vs_52w_high_pct", 0.0),
         },
-        macro_context=macro_context,
         yfinance_data=yfinance_data,
     )
     user_prompt = (
@@ -1004,7 +999,7 @@ async def generate_company_artifact(
     if _retry_context:
         user_prompt = _retry_context + "\n\n" + user_prompt
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
-    system_prompt = skills_content.replace("{macro_context}", macro_context)
+    system_prompt = skills_content
     logger.info(
         "[%s] analyst prompt token estimate: ~%s",
         holding.tradingsymbol,
@@ -1137,7 +1132,6 @@ async def generate_company_artifact(
                 holding=holding,
                 config=config,
                 data_card_sections=data_card_sections,
-                macro_context=macro_context,
             )
             output_path = save_company_analysis_artifact(artifact, settings=config)
             logger.info(
@@ -1314,7 +1308,6 @@ async def generate_company_artifact(
                 return await generate_company_artifact(
                     holding=holding,
                     price_context=price_context,
-                    macro_context=macro_context,
                     skills_content=skills_content,
                     client=client,
                     config=config,
@@ -1341,7 +1334,6 @@ async def analyse_stock(
     holding: Holding,
     portfolio_total_value: float,
     price_context: dict[str, float | str],
-    macro_context: str,
     skills_content: str,
     client: AsyncAnthropic | Any,
     config: Settings,
@@ -1356,7 +1348,6 @@ async def analyse_stock(
         artifact = await generate_company_artifact(
             holding=holding,
             price_context=price_context,
-            macro_context=macro_context,
             skills_content=skills_content,
             client=client,
             config=config,

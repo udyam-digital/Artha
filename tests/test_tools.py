@@ -3,14 +3,6 @@ from pathlib import Path
 from types import ModuleType
 
 from config import Settings
-from kite.client import (
-    KiteMCPClient,
-    MCPServerDefinition,
-    ToolExecutionError,
-    load_kite_server_definition,
-    load_nse_server_definition,
-    load_yfinance_server_definition,
-)
 from kite.tools import (
     _holding_market_value,
     extract_auth_url,
@@ -18,7 +10,11 @@ from kite.tools import (
     profile_requires_login,
     save_kite_artifact,
 )
-from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+from providers.kite import KiteMCPClient, load_kite_server_definition
+from providers.mcp_client import MCPServerDefinition, ToolExecutionError
+from providers.nse import load_nse_server_definition
+from providers.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+from providers.yfinance import load_yfinance_server_definition
 
 
 def test_load_kite_server_definition_from_env() -> None:

@@ -209,8 +209,8 @@ async def test_get_macro_context_via_mcp_partial_failure() -> None:
     assert result.cpi_headline_yoy == pytest.approx(1.33)
     assert result.iip_growth_latest is None
     assert result.gdp_growth_latest == pytest.approx(7.82)
-    assert len(result.fetch_errors) == 1
-    assert "iip" in result.fetch_errors[0]
+    assert len(result.fetch_errors) == 2
+    assert all("iip" in e for e in result.fetch_errors)
 
 
 async def test_get_macro_context_via_mcp_all_fail() -> None:
@@ -226,7 +226,7 @@ async def test_get_macro_context_via_mcp_all_fail() -> None:
     assert result.cpi_headline_yoy is None
     assert result.iip_growth_latest is None
     assert result.gdp_growth_latest is None
-    assert len(result.fetch_errors) == 3
+    assert len(result.fetch_errors) == 4
 
 
 async def test_get_macro_context_via_mcp_empty_data_list() -> None:

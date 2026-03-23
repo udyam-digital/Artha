@@ -10,16 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
-from kite.client import (
-    KiteMCPClient,
-    MCPToolClient,
-    ToolExecutionError,
-    load_nse_server_definition,
-    load_yfinance_server_definition,
-)
 from models import Holding, MacroContext, MFHolding, MFSnapshot, PortfolioSnapshot
+from providers.kite import KiteMCPClient
+from providers.mcp_client import MCPToolClient, ToolExecutionError
+from providers.nse import load_nse_server_definition
+from providers.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
+from providers.yfinance import load_yfinance_server_definition
 from rebalance import PASSIVE_INSTRUMENTS
-from search.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 
 logger = logging.getLogger(__name__)
 _YFINANCE_FIELDS = (

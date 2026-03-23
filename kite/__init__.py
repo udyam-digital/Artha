@@ -1,4 +1,3 @@
-from kite.client import KiteMCPClient, MCPServerDefinition, ToolExecutionError, load_kite_server_definition
 from kite.runtime import (
     KiteSyncResult,
     build_kite_client,
@@ -19,6 +18,8 @@ from kite.tools import (
     save_kite_artifact,
     wait_for_kite_login,
 )
+from providers.kite import KiteMCPClient, load_kite_server_definition
+from providers.mcp_client import MCPServerDefinition, ToolExecutionError
 
 __all__ = [
     "KiteMCPClient",
