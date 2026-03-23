@@ -19,9 +19,9 @@ def test_kite_mcp_args_parse_from_json() -> None:
 def test_nse_mcp_args_parse_from_json() -> None:
     settings = Settings(
         ANTHROPIC_API_KEY="test-key",
-        NSE_MCP_ARGS='["stock-nse-india","mcp"]',
+        NSE_MCP_ARGS='["stock-nse-india@1.3.0","mcp"]',
     )
-    assert settings.nse_mcp_args == ["stock-nse-india", "mcp"]
+    assert settings.nse_mcp_args == ["stock-nse-india@1.3.0", "mcp"]
 
 
 def test_kite_mcp_env_json_parse_from_json() -> None:
@@ -140,13 +140,13 @@ def test_list_and_dict_inputs_are_preserved() -> None:
         ANTHROPIC_API_KEY="test-key",
         KITE_MCP_ARGS=["a", 1],
         KITE_MCP_ENV_JSON={"FOO": 1},
-        NSE_MCP_ARGS=["stock-nse-india", "mcp"],
+        NSE_MCP_ARGS=["stock-nse-india@1.3.0", "mcp"],
         NSE_MCP_ENV_JSON={"NODE_ENV": "production"},
         OTEL_EXPORTER_OTLP_HEADERS={"Authorization": "Basic abc"},
     )
     assert settings.kite_mcp_args == ["a", "1"]
     assert settings.kite_mcp_env_json == {"FOO": "1"}
-    assert settings.nse_mcp_args == ["stock-nse-india", "mcp"]
+    assert settings.nse_mcp_args == ["stock-nse-india@1.3.0", "mcp"]
     assert settings.nse_mcp_env_json == {"NODE_ENV": "production"}
     assert settings.otel_exporter_otlp_headers == {"Authorization": "Basic abc"}
 

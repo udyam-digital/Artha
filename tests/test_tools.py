@@ -9,6 +9,7 @@ from kite.client import (
     ToolExecutionError,
     load_kite_server_definition,
     load_nse_server_definition,
+    load_yfinance_server_definition,
 )
 from kite.tools import (
     _holding_market_value,
@@ -53,8 +54,23 @@ def test_load_nse_server_definition_uses_defaults() -> None:
         transport="stdio",
         url=None,
         command="npx",
-        args=["stock-nse-india", "mcp"],
+        args=["stock-nse-india@1.3.0", "mcp"],
         env={"NODE_ENV": "production"},
+    )
+
+
+def test_load_yfinance_server_definition_uses_pinned_defaults() -> None:
+    settings = Settings(ANTHROPIC_API_KEY="test-key")
+    assert load_yfinance_server_definition(settings) == MCPServerDefinition(
+        transport="stdio",
+        url=None,
+        command="uvx",
+        args=[
+            "--from",
+            "git+https://github.com/richin13/yahoo-finance-mcp@f54e92663d23282fef913f47f6b1bd603e861cbb",
+            "yahoo-finance-mcp",
+        ],
+        env={},
     )
 
 

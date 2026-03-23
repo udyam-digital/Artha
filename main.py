@@ -450,7 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
         "compare-providers", help="Fetch Yahoo Finance and NSE India data into separate JSON files"
     )
     compare_parser.add_argument("--ticker", required=True, help="Ticker to fetch")
-    compare_parser.add_argument("--exchange", default="NSE", help="Exchange suffix for Alpha Vantage, default NSE")
+    compare_parser.add_argument("--exchange", default="NSE", help="Exchange suffix for provider exports, default NSE")
     subparsers.add_parser(
         "kite-login", help="Start Kite login, wait for completion on the same MCP session, and save a snapshot"
     )

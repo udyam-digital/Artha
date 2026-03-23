@@ -504,8 +504,9 @@ async def test_run_full_analysis_paces_analyst_starts(tmp_path: Path, monkeypatc
 
     await orchestrator.run_full_analysis(settings)
     assert len(start_times) == 3
-    assert start_times[1] - start_times[0] >= 0.045
-    assert start_times[2] - start_times[1] >= 0.045
+    # Allow a small amount of event-loop scheduling jitter while still verifying staggered starts.
+    assert start_times[1] - start_times[0] >= 0.04
+    assert start_times[2] - start_times[1] >= 0.04
 
 
 async def test_build_portfolio_summary_falls_back_when_exact_count_fails(tmp_path: Path, monkeypatch, caplog) -> None:

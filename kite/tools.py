@@ -800,6 +800,27 @@ async def get_macro_context() -> MacroContext:
     if cached is not None:
         return cached
 
+    settings = get_settings()
+
+    # Primary: MoSPI MCP server
+    try:
+        from providers.mospi import get_macro_context_via_mcp
+
+        macro_context = await get_macro_context_via_mcp(
+            mospi_mcp_url=settings.mospi_mcp_url,
+            timeout_seconds=settings.mospi_mcp_timeout_seconds,
+        )
+        if any(
+            v is not None
+            for v in (macro_context.cpi_headline_yoy, macro_context.iip_growth_latest, macro_context.gdp_growth_latest)
+        ):
+            _MACRO_CONTEXT_CACHE[cache_key] = macro_context
+            return macro_context
+        logger.warning("[macro_context] MoSPI MCP returned no data; falling back to HTTP")
+    except Exception as exc:
+        logger.warning("[macro_context] MoSPI MCP failed (%s); falling back to HTTP", exc)
+
+    # Fallback: direct HTTP calls to api.mospi.gov.in
     errors: list[str] = []
     latest_dates: list[str] = []
 

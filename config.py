@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_KITE_MCP_URL = "https://mcp.kite.trade/mcp"
+DEFAULT_MOSPI_MCP_URL = "https://datainnovation.mospi.gov.in/mcp"
 DEFAULT_YFINANCE_MCP_COMMAND = "uvx"
 DEFAULT_YFINANCE_MCP_ARGS = [
     "--from",
@@ -74,6 +75,8 @@ class Settings(BaseSettings):
         default_factory=lambda: dict(DEFAULT_NSE_MCP_ENV_JSON), alias="NSE_MCP_ENV_JSON"
     )
     nse_mcp_timeout_seconds: int = Field(default=30, alias="NSE_MCP_TIMEOUT_SECONDS")
+    mospi_mcp_url: str = Field(default=DEFAULT_MOSPI_MCP_URL, alias="MOSPI_MCP_URL")
+    mospi_mcp_timeout_seconds: int = Field(default=30, alias="MOSPI_MCP_TIMEOUT_SECONDS")
     kite_data_dir: Path = Field(default=ROOT_DIR / "data" / "kite", alias="KITE_DATA_DIR")
     kite_login_timeout_seconds: int = Field(default=180, alias="KITE_LOGIN_TIMEOUT_SECONDS")
     kite_login_poll_interval_seconds: int = Field(default=3, alias="KITE_LOGIN_POLL_INTERVAL_SECONDS")

@@ -112,3 +112,36 @@ async def test_get_yfinance_snapshot_fields(tmp_path, monkeypatch) -> None:
     }
     assert result["fifty_two_week_low"] is None
     assert result["sector"] is None
+
+
+async def test_get_yfinance_company_info_unwraps_result_json(tmp_path, monkeypatch) -> None:
+    payload = {"result": json.dumps({"longName": "BSE Limited", "marketCap": 1_000_000.0})}
+    monkeypatch.setattr(kite_tools, "get_settings", lambda: make_settings(tmp_path))
+    monkeypatch.setattr(kite_tools, "load_yfinance_server_definition", lambda settings: object())
+    monkeypatch.setattr(kite_tools, "MCPToolClient", lambda definition, timeout_seconds: FakeMCPClient(payload))
+
+    result = await kite_tools.get_yfinance_company_info("BSE")
+
+    assert result["longName"] == "BSE Limited"
+    assert result["marketCap"] == 1_000_000.0
+
+
+async def test_get_yfinance_provider_payload_collects_snapshot_and_raw_errors(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(kite_tools, "_normalize_yfinance_ticker", lambda ticker: "BSE.NS")
+
+    async def fake_company_info(_ticker: str) -> dict:
+        return {}
+
+    async def fake_snapshot(_ticker: str) -> dict:
+        return {"ticker": "BSE.NS", "cmp": 2500.0}
+
+    monkeypatch.setattr(kite_tools, "get_yfinance_company_info", fake_company_info)
+    monkeypatch.setattr(kite_tools, "get_yfinance_snapshot", fake_snapshot)
+
+    result = await kite_tools.get_yfinance_provider_payload("BSE")
+
+    assert result["provider"] == "yfinance"
+    assert result["provider_symbol"] == "BSE.NS"
+    assert result["snapshot"]["cmp"] == 2500.0
+    assert result["raw"] == {}
+    assert result["errors"] == ["raw company info unavailable"]
