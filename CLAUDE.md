@@ -169,3 +169,49 @@ Custom agents under `.github/agents/` and skills under `.github/skills/` are for
 - `Doublecheck` for verifying factual or numerical claims
 
 See `AGENTS.md` for the full registries and development ruleset.
+
+## Claude Code Skills from `.github/skills/`
+
+**IMPORTANT:** When performing any task that matches a skill below, you MUST read the corresponding `SKILL.md` file first and follow its instructions. This applies to all existing skills and any new ones added to `.github/skills/` in the future.
+
+**General rule:** At the start of any task, glob `.github/skills/*/SKILL.md` and check if any skill's `description` matches what you're about to do. If it matches, read and apply it.
+
+### Skill Trigger Map
+
+| Task you're about to do | Read this skill first |
+|---|---|
+| Safety/governance review of AI agent code, tool calls, auditability | `.github/skills/agent-governance/SKILL.md` |
+| Evaluating AI agent outputs, self-critique, reflection loops | `.github/skills/agentic-eval/SKILL.md` |
+| Reviewing or improving LLM prompts for safety, bias, security | `.github/skills/ai-prompt-engineering-safety-review/SKILL.md` |
+| Generating architecture docs, diagrams, blueprint for the codebase | `.github/skills/architecture-blueprint-generator/SKILL.md` |
+| Autonomous iterative experimentation / optimization loop with measurable metric | `.github/skills/autoresearch/SKILL.md` |
+| Setting up CodeQL code scanning or GitHub Actions security workflows | `.github/skills/codeql/SKILL.md` |
+| Writing a git commit message | `.github/skills/conventional-commit/SKILL.md` |
+| Creating or updating README.md | `.github/skills/create-readme/SKILL.md` |
+| Configuring Dependabot or managing dependency update PRs | `.github/skills/dependabot/SKILL.md` |
+| Verifying factual/numerical claims in AI output, checking for hallucinations | `.github/skills/doublecheck/SKILL.md` |
+| Building evals, golden datasets, regression tests for LLM app behavior | `.github/skills/eval-driven-dev/SKILL.md` |
+| Using GitHub CLI (`gh`) for repos, issues, PRs, Actions, releases | `.github/skills/gh-cli/SKILL.md` |
+| Creating, updating, or managing GitHub issues | `.github/skills/github-issues/SKILL.md` |
+| Writing unit or integration tests in any language | `.github/skills/polyglot-test-agent/SKILL.md` |
+| Writing a PRD or product requirements document | `.github/skills/prd/SKILL.md` |
+| Building a GitHub Copilot prompt or skill | `.github/skills/prompt-builder/SKILL.md` |
+| Running pytest with coverage, finding uncovered lines, reaching 100% coverage | `.github/skills/pytest-coverage/SKILL.md` |
+| Generating a Python MCP server | `.github/skills/python-mcp-server-generator/SKILL.md` |
+| Refactoring code: extracting functions, renaming, breaking up god functions | `.github/skills/refactor/SKILL.md` |
+| Configuring GitHub secret scanning, push protection, custom patterns | `.github/skills/secret-scanning/SKILL.md` |
+| Building UI components (check for existing shadcn components first) | `.github/skills/shadcn-component-discovery/SKILL.md` |
+| Reviewing SQL code for security, injection, access control | `.github/skills/sql-code-review/SKILL.md` |
+| Optimizing SQL queries, indexing, execution plans | `.github/skills/sql-optimization/SKILL.md` |
+| Suggesting new Copilot agents to add | `.github/skills/suggest-awesome-github-copilot-agents/SKILL.md` |
+| Suggesting new Copilot instruction files to add | `.github/skills/suggest-awesome-github-copilot-instructions/SKILL.md` |
+| Suggesting new Copilot skills to add | `.github/skills/suggest-awesome-github-copilot-skills/SKILL.md` |
+| artha-ui design, UI patterns, frontend decisions | `.github/skills/artha-ui-design.md` |
+
+### Future Skills
+
+Any new skill added under `.github/skills/*/SKILL.md` is automatically in scope. Before starting a non-trivial task, run:
+```
+glob: .github/skills/*/SKILL.md
+```
+Check each skill's `description` field and apply any that match the current task.

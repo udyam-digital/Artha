@@ -137,7 +137,6 @@ async def get_company_artifact_and_verdict(
     *,
     holding: Holding,
     price_context: dict[str, float | str],
-    macro_context: str = "",
     skills_content: str,
     client: AsyncAnthropic,
     settings: Settings,
@@ -170,7 +169,6 @@ async def get_company_artifact_and_verdict(
         artifact = await generate_company_artifact(
             holding=holding,
             price_context=price_context,
-            macro_context=macro_context,
             skills_content=skills_content,
             client=client,
             config=settings,

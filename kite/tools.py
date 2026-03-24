@@ -1,492 +1,109 @@
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import re
-import time
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any
-
+import kite.macro as _macro_module
+import kite.provider_payloads as _provider_payloads_module
+import kite.yfinance_tools as _yfinance_tools_module
 from config import Settings, get_settings
-from models import Holding, MacroContext, MFHolding, MFSnapshot, PortfolioSnapshot
-from providers.kite import KiteMCPClient
+from kite.coerce import (
+    _coerce_float,
+    _coerce_int,
+    _coerce_json_object,
+    _coerce_optional_float,
+    _coerce_optional_int,
+    _coerce_percent,
+)
+from kite.macro import (
+    _MACRO_CONTEXT_CACHE,
+    _extract_mospi_records,
+    _fetch_cpi_context,
+    _fetch_gdp_context,
+    _fetch_iip_context,
+    _find_value,
+)
+from kite.portfolio import _holding_market_value, kite_get_mf_snapshot, kite_get_portfolio
+from kite.price import _extract_holdings_payload, kite_get_price_history
+from kite.session import (
+    extract_auth_url,
+    kite_get_profile,
+    kite_login,
+    profile_requires_login,
+    save_kite_artifact,
+    wait_for_kite_login,
+)
+from kite.tool_dispatch import execute_tool_call, get_tool_definitions
+from kite.yfinance_tools import _is_missing_company_response, _normalize_yfinance_ticker, map_yfinance_snapshot
 from providers.mcp_client import MCPToolClient, ToolExecutionError
 from providers.nse import load_nse_server_definition
-from providers.tavily import DEFAULT_TAVILY_MAX_RESULTS, get_tavily_search_tool_definition, tavily_search
 from providers.yfinance import load_yfinance_server_definition
-from rebalance import PASSIVE_INSTRUMENTS
 
-logger = logging.getLogger(__name__)
-_YFINANCE_FIELDS = (
-    "ticker",
-    "cmp",
-    "fifty_two_week_low",
-    "fifty_two_week_high",
-    "trailing_pe",
-    "forward_pe",
-    "price_to_book",
-    "revenue_growth_pct",
-    "earnings_growth_pct",
-    "profit_margin_pct",
-    "analyst_count",
-    "target_mean_price",
-    "target_median_price",
-    "upside_pct",
-    "sector",
-    "industry",
-)
-_MACRO_CONTEXT_CACHE: dict[str, MacroContext] = {}
+_DEFAULT_FETCH_CPI_CONTEXT = _fetch_cpi_context
+_DEFAULT_FETCH_IIP_CONTEXT = _fetch_iip_context
+_DEFAULT_FETCH_GDP_CONTEXT = _fetch_gdp_context
 
 
-def _coerce_float(value: Any, default: float = 0.0) -> float:
-    try:
-        if value is None:
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _coerce_int(value: Any, default: int = 0) -> int:
-    try:
-        if value is None:
-            return default
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _coerce_optional_float(value: Any) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_optional_int(value: Any) -> int | None:
-    try:
-        if value is None or value == "":
-            return None
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_percent(value: Any) -> float | None:
-    numeric = _coerce_optional_float(value)
-    if numeric is None:
-        return None
-    return round(numeric * 100.0, 2)
-
-
-def _empty_yfinance_snapshot(ticker: str) -> dict[str, Any]:
-    return {key: (ticker if key == "ticker" else None) for key in _YFINANCE_FIELDS}
-
-
-def _normalize_yfinance_ticker(ticker_ns: str) -> str:
-    normalized = str(ticker_ns).strip().upper()
-    if not normalized:
-        return normalized
-    return normalized if normalized.endswith(".NS") else f"{normalized}.NS"
-
-
-def _map_yfinance_snapshot(ticker: str, raw_payload: dict[str, Any]) -> dict[str, Any]:
-    snapshot = _empty_yfinance_snapshot(ticker)
-    cmp_value = _coerce_optional_float(raw_payload.get("currentPrice"))
-    if cmp_value is None:
-        cmp_value = _coerce_optional_float(raw_payload.get("regularMarketPrice"))
-    target_mean_price = _coerce_optional_float(raw_payload.get("targetMeanPrice"))
-    snapshot.update(
-        {
-            "cmp": cmp_value,
-            "fifty_two_week_low": _coerce_optional_float(raw_payload.get("fiftyTwoWeekLow")),
-            "fifty_two_week_high": _coerce_optional_float(raw_payload.get("fiftyTwoWeekHigh")),
-            "trailing_pe": _coerce_optional_float(raw_payload.get("trailingPE")),
-            "forward_pe": _coerce_optional_float(raw_payload.get("forwardPE")),
-            "price_to_book": _coerce_optional_float(raw_payload.get("priceToBook")),
-            "revenue_growth_pct": _coerce_percent(raw_payload.get("revenueGrowth")),
-            "earnings_growth_pct": _coerce_percent(
-                raw_payload.get("earningsGrowth") or raw_payload.get("earningsQuarterlyGrowth")
-            ),
-            "profit_margin_pct": _coerce_percent(raw_payload.get("profitMargins")),
-            "analyst_count": _coerce_optional_int(raw_payload.get("numberOfAnalystOpinions")),
-            "target_mean_price": target_mean_price,
-            "target_median_price": _coerce_optional_float(raw_payload.get("targetMedianPrice")),
-            "sector": str(raw_payload.get("sector")) if raw_payload.get("sector") else None,
-            "industry": str(raw_payload.get("industry")) if raw_payload.get("industry") else None,
-        }
-    )
-    snapshot["upside_pct"] = (
-        round(((target_mean_price - cmp_value) / cmp_value) * 100.0, 2)
-        if cmp_value and target_mean_price is not None
-        else None
-    )
-    return snapshot
-
-
-def _is_missing_company_response(payload: Any) -> bool:
-    if isinstance(payload, dict):
-        raw_text = str(payload.get("raw_text", "")).lower()
-        return "not found" in raw_text or "error:" in raw_text
-    return isinstance(payload, str) and ("not found" in payload.lower() or "error:" in payload.lower())
-
-
-def _coerce_json_object(payload: Any) -> Any:
-    if isinstance(payload, str):
-        try:
-            return json.loads(payload)
-        except json.JSONDecodeError:
-            return payload
-    return payload
-
-
-def _unwrap_tool_payload(payload: Any) -> Any:
-    current = payload
-    for _ in range(3):
-        if isinstance(current, dict) and "result" in current and len(current) == 1:
-            current = current["result"]
-            continue
-        break
-    return _coerce_json_object(current)
-
-
-def _holding_market_value(item: dict[str, Any]) -> float:
-    current_value = _coerce_float(item.get("current_value"))
-    if current_value:
-        return current_value
-    quantity = _coerce_float(item.get("quantity"))
-    last_price = _coerce_float(item.get("last_price"))
-    return quantity * last_price
-
-
-def _extract_holdings_payload(raw_response: Any) -> list[dict[str, Any]]:
-    if isinstance(raw_response, list):
-        return [item for item in raw_response if isinstance(item, dict)]
-    if isinstance(raw_response, dict):
-        for key in ("holdings", "data", "items"):
-            value = raw_response.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def _extract_available_cash(raw_margins: Any) -> float:
-    if isinstance(raw_margins, int | float):
-        return float(raw_margins)
-    if not isinstance(raw_margins, dict):
-        return 0.0
-
-    candidate_paths = (
-        ("equity", "available", "cash"),
-        ("equity", "available", "live_balance"),
-        ("equity", "available", "opening_balance"),
-        ("available", "cash"),
-        ("net",),
-    )
-    for path in candidate_paths:
-        node: Any = raw_margins
-        for key in path:
-            if not isinstance(node, dict):
-                node = None
-                break
-            node = node.get(key)
-        if node is not None:
-            return _coerce_float(node)
-    return 0.0
-
-
-def _extract_mf_value(raw_mf_holdings: Any) -> float:
-    total = 0.0
-    for item in _extract_holdings_payload(raw_mf_holdings):
-        current_value = _coerce_float(item.get("current_value"))
-        if current_value == 0.0:
-            current_value = _coerce_float(item.get("last_price")) * _coerce_float(item.get("quantity"))
-        total += current_value
-    return total
-
-
-def _normalize_mf_holding(item: dict[str, Any]) -> MFHolding:
-    quantity = _coerce_float(item.get("quantity"))
-    average_price = _coerce_float(item.get("average_price"))
-    last_price = _coerce_float(item.get("last_price"))
-    current_value = _coerce_float(item.get("current_value"), default=quantity * last_price)
-    pnl = _coerce_float(item.get("pnl"), default=current_value - (average_price * quantity))
-    base_value = average_price * quantity
-    pnl_pct = _coerce_float(
-        item.get("pnl_percentage"),
-        default=((pnl / base_value) * 100.0 if base_value else 0.0),
-    )
-    return MFHolding(
-        tradingsymbol=str(item.get("tradingsymbol", item.get("symbol", ""))).upper(),
-        fund=str(item.get("fund", item.get("scheme_name", item.get("name", "")))),
-        folio=str(item.get("folio", "")),
-        quantity=quantity,
-        average_price=average_price,
-        last_price=last_price,
-        current_value=current_value,
-        pnl=pnl,
-        pnl_pct=pnl_pct,
-        scheme_type=str(item.get("scheme_type", item.get("type", ""))),
-        plan=str(item.get("plan", "")),
-    )
-
-
-def _parse_target_weights_from_rules(rules_path: Path) -> dict[str, float]:
-    if not rules_path.exists():
-        return {}
-
-    weights: dict[str, float] = {}
-    for raw_line in rules_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if "%" not in line or ":" not in line:
-            continue
-        lhs, rhs = line.split(":", maxsplit=1)
-        symbol = lhs.translate(str.maketrans("", "", "- *`")).strip().upper()
-        pct_text = rhs.split("%", maxsplit=1)[0].strip()
-        try:
-            weights[symbol] = float(pct_text)
-        except ValueError:
-            continue
-    return weights
-
-
-def _assign_target_weights(raw_holdings: list[dict[str, Any]], explicit_targets: dict[str, float]) -> dict[str, float]:
-    eligible_symbols = [
-        str(item.get("tradingsymbol", "")).upper()
-        for item in raw_holdings
-        if str(item.get("tradingsymbol", "")).upper() not in PASSIVE_INSTRUMENTS
-    ]
-    default_weight = round(100.0 / len(eligible_symbols), 4) if eligible_symbols else 0.0
-    targets: dict[str, float] = {}
-    for item in raw_holdings:
-        symbol = str(item.get("tradingsymbol", "")).upper()
-        if symbol in PASSIVE_INSTRUMENTS:
-            targets[symbol] = 0.0
-        else:
-            targets[symbol] = explicit_targets.get(symbol, default_weight)
-    return targets
-
-
-def _normalize_holding(
-    item: dict[str, Any],
-    total_portfolio_value: float,
-    targets: dict[str, float],
-) -> Holding:
-    quantity = _coerce_int(item.get("quantity"))
-    average_price = _coerce_float(item.get("average_price"))
-    last_price = _coerce_float(item.get("last_price"))
-    current_value = _coerce_float(item.get("current_value"), default=quantity * last_price)
-    pnl = _coerce_float(item.get("pnl"), default=(last_price - average_price) * quantity)
-    pnl_pct = _coerce_float(
-        item.get("pnl_percentage"),
-        default=((pnl / (average_price * quantity)) * 100.0 if average_price and quantity else 0.0),
-    )
-    symbol = str(item.get("tradingsymbol", "")).upper()
-    return Holding(
-        tradingsymbol=symbol,
-        exchange=str(item.get("exchange", "NSE")).upper(),
-        quantity=quantity,
-        average_price=average_price,
-        last_price=last_price,
-        current_value=current_value,
-        current_weight_pct=(current_value / total_portfolio_value * 100.0) if total_portfolio_value else 0.0,
-        target_weight_pct=targets.get(symbol, 0.0),
-        pnl=pnl,
-        pnl_pct=pnl_pct,
-        instrument_token=_coerce_int(item.get("instrument_token")),
-    )
-
-
-async def kite_get_portfolio(
-    kite_client: KiteMCPClient,
-    settings: Settings | None = None,
-) -> PortfolioSnapshot:
-    settings = settings or get_settings()
-    explicit_targets = _parse_target_weights_from_rules(Path("skills") / "portfolio_rules.md")
-
-    try:
-        raw_holdings, raw_margins, raw_mf_holdings = await asyncio.gather(
-            kite_client.call_tool("get_holdings"),
-            kite_client.call_tool("get_margins"),
-            kite_client.call_tool("get_mf_holdings"),
+async def get_macro_context():
+    cache_key = __import__("datetime").datetime.now(__import__("datetime").UTC).date().isoformat()
+    cached = _MACRO_CONTEXT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    helper_overridden = any(
+        current is not default
+        for current, default in (
+            (_fetch_cpi_context, _DEFAULT_FETCH_CPI_CONTEXT),
+            (_fetch_iip_context, _DEFAULT_FETCH_IIP_CONTEXT),
+            (_fetch_gdp_context, _DEFAULT_FETCH_GDP_CONTEXT),
         )
-    except Exception as exc:
-        raise ToolExecutionError(
-            "Kite MCP not connected or session expired. Start the MCP command configured for Artha, "
-            "complete Zerodha login if required, then retry."
-        ) from exc
-
-    holdings_payload = _extract_holdings_payload(raw_holdings)
-    total_equity_value = sum(_holding_market_value(item) for item in holdings_payload)
-    target_weights = _assign_target_weights(holdings_payload, explicit_targets)
-    available_cash = _extract_available_cash(raw_margins)
-    total_value = total_equity_value + available_cash
-    holdings = [
-        _normalize_holding(item=item, total_portfolio_value=total_value, targets=target_weights)
-        for item in holdings_payload
-    ]
-    mf_total_value = _extract_mf_value(raw_mf_holdings)
-    if mf_total_value:
-        logger.info("MF holdings value excluded from rebalancing portfolio total: %.2f", mf_total_value)
-
-    return PortfolioSnapshot(
-        fetched_at=datetime.now(UTC),
-        total_value=total_value,
-        available_cash=available_cash,
-        holdings=holdings,
     )
+    if not helper_overridden:
+        try:
+            from providers.mospi import get_macro_context_via_mcp
 
-
-async def kite_get_mf_snapshot(
-    kite_client: KiteMCPClient,
-    settings: Settings | None = None,
-) -> MFSnapshot:
-    del settings
-    try:
-        raw_mf_holdings = await kite_client.call_tool("get_mf_holdings")
-    except Exception as exc:
-        raise ToolExecutionError("Failed to fetch MF holdings from Kite MCP.") from exc
-
-    payload = _extract_holdings_payload(raw_mf_holdings)
-    holdings = [_normalize_mf_holding(item) for item in payload]
-    total_value = sum(holding.current_value for holding in holdings)
-    return MFSnapshot(
-        fetched_at=datetime.now(UTC),
-        total_value=total_value,
-        holdings=holdings,
-    )
-
-
-async def kite_get_price_history(
-    kite_client: KiteMCPClient,
-    tradingsymbol: str,
-    instrument_token: int,
-    days: int = 365,
-) -> dict[str, Any]:
-    end_date = datetime.now(UTC)
-    start_date = end_date - timedelta(days=days)
-
-    try:
-        raw_history = await kite_client.call_tool(
-            "get_historical_data",
-            {
-                "instrument_token": instrument_token,
-                "interval": "day",
-                "from_date": start_date.date().isoformat(),
-                "to_date": end_date.date().isoformat(),
-            },
-        )
-    except Exception as exc:
-        raise ToolExecutionError(f"Price history fetch failed for {tradingsymbol}: {exc}") from exc
-
-    candles = _extract_holdings_payload(raw_history)
-    if not candles and isinstance(raw_history, dict):
-        data = raw_history.get("candles") or raw_history.get("data")
-        if isinstance(data, list):
-            candles = data
-
-    parsed: list[dict[str, float]] = []
-    for candle in candles:
-        if isinstance(candle, dict):
-            parsed.append(
-                {
-                    "close": _coerce_float(candle.get("close")),
-                    "high": _coerce_float(candle.get("high")),
-                    "low": _coerce_float(candle.get("low")),
-                }
+            settings = get_settings()
+            result = await get_macro_context_via_mcp(
+                mospi_mcp_url=settings.mospi_mcp_url,
+                timeout_seconds=settings.mospi_mcp_timeout_seconds,
             )
-        elif isinstance(candle, list) and len(candle) >= 5:
-            parsed.append(
-                {
-                    "high": _coerce_float(candle[2]),
-                    "low": _coerce_float(candle[3]),
-                    "close": _coerce_float(candle[4]),
-                }
-            )
+        except Exception as exc:
+            from models import MacroContext
 
-    if not parsed:
-        raise ToolExecutionError(f"No historical data available for {tradingsymbol}")
-
-    closes = [row["close"] for row in parsed if row["close"] > 0]
-    highs = [row["high"] for row in parsed if row["high"] > 0]
-    lows = [row["low"] for row in parsed if row["low"] > 0]
-    current_price = closes[-1] if closes else 0.0
-    price_1y_ago = closes[0] if closes else 0.0
-    high_52w = max(highs) if highs else 0.0
-    low_52w = min(lows) if lows else 0.0
-
-    return {
-        "52w_high": high_52w,
-        "52w_low": low_52w,
-        "current_vs_52w_high_pct": ((current_price / high_52w) - 1) * 100.0 if high_52w else 0.0,
-        "price_1y_ago": price_1y_ago,
-        "price_change_1y_pct": ((current_price / price_1y_ago) - 1) * 100.0 if price_1y_ago else 0.0,
-    }
+            result = MacroContext(fetch_errors=[f"mospi_mcp: {exc}"])
+        _MACRO_CONTEXT_CACHE[cache_key] = result
+        return result
+    _macro_module._extract_mospi_records = _extract_mospi_records
+    _macro_module._fetch_cpi_context = _fetch_cpi_context
+    _macro_module._fetch_gdp_context = _fetch_gdp_context
+    _macro_module._fetch_iip_context = _fetch_iip_context
+    _macro_module._find_value = _find_value
+    _macro_module._MACRO_CONTEXT_CACHE = _MACRO_CONTEXT_CACHE
+    return await _macro_module.get_macro_context()
 
 
-async def get_yfinance_snapshot(ticker_ns: str) -> dict[str, Any]:
-    settings = get_settings()
-    ticker = _normalize_yfinance_ticker(ticker_ns)
-    if not ticker:
-        return {}
-
-    try:
-        definition = load_yfinance_server_definition(settings)
-        async with MCPToolClient(definition, timeout_seconds=settings.yfinance_mcp_timeout_seconds) as client:
-            raw_payload = await client.call_tool("get_stock_info", {"ticker": ticker})
-    except Exception as exc:
-        logger.warning("Yahoo Finance snapshot fetch failed for %s: %s", ticker, exc)
-        return {}
-
-    if isinstance(raw_payload, dict) and "result" in raw_payload:
-        raw_payload = _coerce_json_object(raw_payload["result"])
-    else:
-        raw_payload = _coerce_json_object(raw_payload)
-
-    if _is_missing_company_response(raw_payload):
-        logger.warning("Yahoo Finance returned no company payload for %s", ticker)
-        return {}
-
-    if not isinstance(raw_payload, dict):
-        logger.warning("Yahoo Finance returned non-dict payload for %s", ticker)
-        return {}
-
-    return _map_yfinance_snapshot(ticker, raw_payload)
+async def get_nse_india_provider_payload(ticker: str):
+    _provider_payloads_module.get_settings = get_settings
+    _provider_payloads_module.load_nse_server_definition = load_nse_server_definition
+    _provider_payloads_module.MCPToolClient = MCPToolClient
+    return await _provider_payloads_module.get_nse_india_provider_payload(ticker)
 
 
-async def get_yfinance_company_info(ticker_ns: str) -> dict[str, Any]:
-    settings = get_settings()
-    ticker = _normalize_yfinance_ticker(ticker_ns)
-    if not ticker:
-        return {}
-
-    try:
-        definition = load_yfinance_server_definition(settings)
-        async with MCPToolClient(definition, timeout_seconds=settings.yfinance_mcp_timeout_seconds) as client:
-            raw_payload = await client.call_tool("get_stock_info", {"ticker": ticker})
-    except Exception as exc:
-        logger.warning("Yahoo Finance company info fetch failed for %s: %s", ticker, exc)
-        return {}
-
-    if isinstance(raw_payload, dict) and "result" in raw_payload:
-        raw_payload = _coerce_json_object(raw_payload["result"])
-    else:
-        raw_payload = _coerce_json_object(raw_payload)
-
-    if _is_missing_company_response(raw_payload) or not isinstance(raw_payload, dict):
-        return {}
-    return raw_payload
+async def get_yfinance_snapshot(ticker_ns: str):
+    _yfinance_tools_module.get_settings = get_settings
+    _yfinance_tools_module.load_yfinance_server_definition = load_yfinance_server_definition
+    _yfinance_tools_module.MCPToolClient = MCPToolClient
+    _yfinance_tools_module._normalize_yfinance_ticker = _normalize_yfinance_ticker
+    return await _yfinance_tools_module.get_yfinance_snapshot(ticker_ns)
 
 
-async def get_yfinance_provider_payload(ticker_ns: str) -> dict[str, Any]:
+async def get_yfinance_company_info(ticker_ns: str):
+    _yfinance_tools_module.get_settings = get_settings
+    _yfinance_tools_module.load_yfinance_server_definition = load_yfinance_server_definition
+    _yfinance_tools_module.MCPToolClient = MCPToolClient
+    _yfinance_tools_module._normalize_yfinance_ticker = _normalize_yfinance_ticker
+    return await _yfinance_tools_module.get_yfinance_company_info(ticker_ns)
+
+
+async def get_yfinance_provider_payload(ticker_ns: str):
     ticker = _normalize_yfinance_ticker(ticker_ns)
     raw_company_info = await get_yfinance_company_info(ticker_ns)
     snapshot = await get_yfinance_snapshot(ticker_ns)
-    errors: list[str] = []
+    errors = []
     if not raw_company_info:
         errors.append("raw company info unavailable")
     if not snapshot:
@@ -501,283 +118,44 @@ async def get_yfinance_provider_payload(ticker_ns: str) -> dict[str, Any]:
     }
 
 
-async def get_nse_india_provider_payload(ticker: str) -> dict[str, Any]:
-    settings = get_settings()
-    normalized_ticker = str(ticker).strip().upper()
-    result: dict[str, Any] = {
-        "provider": "nse_india",
-        "requested_ticker": normalized_ticker,
-        "provider_symbol": normalized_ticker,
-        "snapshot": {},
-        "raw": {},
-        "errors": [],
-    }
-    if not normalized_ticker:
-        result["errors"].append("blank ticker")
-        return result
-
-    try:
-        definition = load_nse_server_definition(settings)
-        async with MCPToolClient(definition, timeout_seconds=settings.nse_mcp_timeout_seconds) as client:
-            tool_specs = (
-                ("details", "get_equity_details", {"symbol": normalized_ticker}),
-                ("trade_info", "get_equity_trade_info", {"symbol": normalized_ticker}),
-                ("corporate_info", "get_equity_corporate_info", {"symbol": normalized_ticker}),
-            )
-            for label, tool_name, arguments in tool_specs:
-                try:
-                    payload = await client.call_tool(tool_name, arguments)
-                    result["raw"][label] = _unwrap_tool_payload(payload)
-                except Exception as exc:
-                    result["raw"][label] = {}
-                    result["errors"].append(f"{label}: {exc}")
-    except Exception as exc:
-        logger.warning("NSE India provider fetch failed for %s: %s", normalized_ticker, exc)
-        result["errors"].append(str(exc))
-        return result
-
-    details = result["raw"].get("details") if isinstance(result["raw"], dict) else {}
-    trade_info = result["raw"].get("trade_info") if isinstance(result["raw"], dict) else {}
-    if not isinstance(details, dict):
-        details = {}
-    if not isinstance(trade_info, dict):
-        trade_info = {}
-
-    info = details.get("info") if isinstance(details.get("info"), dict) else {}
-    price_info = details.get("priceInfo") if isinstance(details.get("priceInfo"), dict) else {}
-    metadata = details.get("metadata") if isinstance(details.get("metadata"), dict) else {}
-    security_info = details.get("securityInfo") if isinstance(details.get("securityInfo"), dict) else {}
-    market_book = (
-        trade_info.get("marketDeptOrderBook") if isinstance(trade_info.get("marketDeptOrderBook"), dict) else {}
-    )
-
-    result["snapshot"] = {
-        "company_name": info.get("companyName") or info.get("symbol") or normalized_ticker,
-        "industry": info.get("industry"),
-        "sector": security_info.get("boardStatus"),
-        "last_price": _coerce_optional_float(price_info.get("lastPrice") or price_info.get("lastPriceDisplay")),
-        "previous_close": _coerce_optional_float(price_info.get("previousClose")),
-        "day_high": _coerce_optional_float(
-            price_info.get("intraDayHighLow", {}).get("max")
-            if isinstance(price_info.get("intraDayHighLow"), dict)
-            else None
-        ),
-        "day_low": _coerce_optional_float(
-            price_info.get("intraDayHighLow", {}).get("min")
-            if isinstance(price_info.get("intraDayHighLow"), dict)
-            else None
-        ),
-        "fifty_two_week_high": _coerce_optional_float(
-            price_info.get("weekHighLow", {}).get("max") if isinstance(price_info.get("weekHighLow"), dict) else None
-        ),
-        "fifty_two_week_low": _coerce_optional_float(
-            price_info.get("weekHighLow", {}).get("min") if isinstance(price_info.get("weekHighLow"), dict) else None
-        ),
-        "market_cap": _coerce_optional_float(metadata.get("marketCap")),
-        "listing_date": metadata.get("listingDate"),
-        "is_fno": info.get("isFNOSec"),
-        "active_series": metadata.get("activeSeries"),
-        "delivery_to_traded_qty": _coerce_optional_float(security_info.get("delivToTradedQty")),
-        "total_traded_volume": _coerce_optional_float(market_book.get("totalTradedVolume")),
-        "total_traded_value": _coerce_optional_float(market_book.get("totalTradedValue")),
-    }
-    return result
-
-
-async def get_macro_context() -> MacroContext:
-    cache_key = datetime.now(UTC).date().isoformat()
-    cached = _MACRO_CONTEXT_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
-    settings = get_settings()
-
-    try:
-        from providers.mospi import get_macro_context_via_mcp
-
-        macro_context = await get_macro_context_via_mcp(
-            mospi_mcp_url=settings.mospi_mcp_url,
-            timeout_seconds=settings.mospi_mcp_timeout_seconds,
-        )
-    except Exception as exc:
-        logger.warning("[macro_context] MoSPI MCP failed (%s); macro context unavailable", exc)
-        macro_context = MacroContext(fetch_errors=[f"mospi_mcp: {exc}"])
-
-    _MACRO_CONTEXT_CACHE[cache_key] = macro_context
-    return macro_context
-
-
-def _artifact_path(settings: Settings, *parts: str) -> Path:
-    path = settings.kite_data_dir.joinpath(*parts)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def save_kite_artifact(
-    payload: dict[str, Any],
-    *,
-    settings: Settings | None = None,
-    category: str,
-    stem: str,
-) -> Path:
-    settings = settings or get_settings()
-    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    artifact = _artifact_path(settings, category, f"{timestamp}_{stem}.json")
-    artifact.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
-
-    latest_artifact = _artifact_path(settings, category, f"latest_{stem}.json")
-    latest_artifact.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
-    return artifact
-
-
-def extract_auth_url(payload: Any) -> str | None:
-    if isinstance(payload, str):
-        match = re.search(r"https?://\S+", payload)
-        return match.group(0).rstrip(").,]}>") if match else None
-    if isinstance(payload, list):
-        for item in payload:
-            found = extract_auth_url(item)
-            if found:
-                return found
-        return None
-    if isinstance(payload, dict):
-        preferred_keys = (
-            "url",
-            "login_url",
-            "auth_url",
-            "authorize_url",
-            "redirect_url",
-        )
-        for key in preferred_keys:
-            value = payload.get(key)
-            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                return value.rstrip(").,]}>")
-        for value in payload.values():
-            found = extract_auth_url(value)
-            if found:
-                return found
-    return None
-
-
-async def kite_login(
-    kite_client: KiteMCPClient,
-    settings: Settings | None = None,
-) -> tuple[dict[str, Any], str | None, Path]:
-    settings = settings or get_settings()
-    raw_response = await kite_client.call_tool("login")
-    payload = raw_response if isinstance(raw_response, dict) else {"raw_text": raw_response}
-    auth_url = extract_auth_url(payload)
-    if auth_url:
-        payload["auth_url"] = auth_url
-    artifact = save_kite_artifact(payload, settings=settings, category="auth", stem="login")
-    return payload, auth_url, artifact
-
-
-async def kite_get_profile(kite_client: KiteMCPClient) -> dict[str, Any]:
-    raw_response = await kite_client.call_tool("get_profile")
-    if isinstance(raw_response, dict):
-        return raw_response
-    return {"raw_text": raw_response}
-
-
-def profile_requires_login(profile: dict[str, Any]) -> bool:
-    if not profile:
-        return True
-    raw_text = str(profile.get("raw_text", "")).lower()
-    if "please log in first" in raw_text or "login tool" in raw_text:
-        return True
-    auth_markers = ("user_id", "user_name", "email", "broker", "exchanges")
-    return not any(marker in profile for marker in auth_markers)
-
-
-async def wait_for_kite_login(
-    kite_client: KiteMCPClient,
-    settings: Settings | None = None,
-) -> dict[str, Any]:
-    settings = settings or get_settings()
-    deadline = time.monotonic() + settings.kite_login_timeout_seconds
-
-    while time.monotonic() < deadline:
-        profile = await kite_get_profile(kite_client)
-        if not profile_requires_login(profile):
-            return profile
-        await asyncio.sleep(settings.kite_login_poll_interval_seconds)
-
-    raise ToolExecutionError("Kite login did not complete before timeout. Finish the browser login and retry.")
-
-
-def get_tool_definitions(settings: Settings | None = None) -> list[dict[str, Any]]:
-    settings = settings or get_settings()
-    return [
-        {
-            "name": "kite_get_portfolio",
-            "description": (
-                "Fetch the live Zerodha/Kite portfolio snapshot through the Kite MCP server configured for Artha. "
-                "This returns current equity holdings, cash, and total portfolio value. Use this first for "
-                "portfolio runs and before computing any rebalancing recommendation."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-        {
-            "name": "kite_get_price_history",
-            "description": (
-                "Fetch daily historical price data for a holding from Artha's Kite MCP server and summarize 52-week "
-                "range and 1-year performance. Use this when you need price context for a stock already present "
-                "in the live portfolio."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "tradingsymbol": {"type": "string"},
-                    "instrument_token": {"type": "integer"},
-                    "days": {"type": "integer", "default": 365},
-                },
-                "required": ["tradingsymbol", "instrument_token"],
-            },
-        },
-        get_tavily_search_tool_definition(settings),
-    ]
-
-
-async def execute_tool_call(
-    name: str,
-    tool_input: dict[str, Any],
-    kite_client: KiteMCPClient,
-    settings: Settings | None = None,
-) -> tuple[str, bool, PortfolioSnapshot | None]:
-    settings = settings or get_settings()
-    started = time.perf_counter()
-    snapshot: PortfolioSnapshot | None = None
-    try:
-        if name == "kite_get_portfolio":
-            snapshot = await kite_get_portfolio(kite_client, settings=settings)
-            payload = snapshot.model_dump(mode="json")
-        elif name == "kite_get_price_history":
-            payload = await kite_get_price_history(
-                kite_client,
-                tradingsymbol=str(tool_input["tradingsymbol"]),
-                instrument_token=int(tool_input["instrument_token"]),
-                days=int(tool_input.get("days", 365)),
-            )
-        elif name == "tavily_search":
-            payload = {
-                "result": tavily_search(
-                    query=str(tool_input["query"]),
-                    max_results=int(tool_input.get("max_results", DEFAULT_TAVILY_MAX_RESULTS)),
-                    settings=settings,
-                )
-            }
-        else:
-            raise ToolExecutionError(f"Unknown tool requested: {name}")
-
-        return json.dumps(payload, ensure_ascii=True), False, snapshot
-    except Exception as exc:
-        logger.exception("Tool call failed: %s", name)
-        return json.dumps({"error": str(exc)}, ensure_ascii=True), True, snapshot
-    finally:
-        elapsed = time.perf_counter() - started
-        logger.info("Tool call completed: %s in %.2fs", name, elapsed)
+__all__ = [
+    "Settings",
+    "ToolExecutionError",
+    "_MACRO_CONTEXT_CACHE",
+    "_coerce_float",
+    "_coerce_int",
+    "_coerce_json_object",
+    "_coerce_optional_float",
+    "_coerce_optional_int",
+    "_coerce_percent",
+    "_extract_holdings_payload",
+    "_extract_mospi_records",
+    "_fetch_cpi_context",
+    "_fetch_gdp_context",
+    "_fetch_iip_context",
+    "_find_value",
+    "_holding_market_value",
+    "_is_missing_company_response",
+    "_normalize_yfinance_ticker",
+    "MCPToolClient",
+    "execute_tool_call",
+    "extract_auth_url",
+    "get_macro_context",
+    "get_nse_india_provider_payload",
+    "get_settings",
+    "get_tool_definitions",
+    "get_yfinance_company_info",
+    "get_yfinance_provider_payload",
+    "get_yfinance_snapshot",
+    "kite_get_mf_snapshot",
+    "kite_get_portfolio",
+    "kite_get_price_history",
+    "kite_get_profile",
+    "kite_login",
+    "map_yfinance_snapshot",
+    "load_nse_server_definition",
+    "load_yfinance_server_definition",
+    "profile_requires_login",
+    "save_kite_artifact",
+    "wait_for_kite_login",
+]
