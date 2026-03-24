@@ -38,6 +38,15 @@ jobs:
       - name: Run ruff check
         run: ruff check .
 
+      - name: Check file length limit (400 lines)
+        run: |
+          # Only check files changed in this push/PR — existing violations
+          # are grandfathered until those files are refactored.
+          changed=$(git diff --name-only origin/main...HEAD -- '*.py' | grep '\.py$' || true)
+          if [ -n "$changed" ]; then
+            python3 scripts/check_file_length.py $changed
+          fi
+
   tests:
     name: Tests (Python 3.11)
     runs-on: ubuntu-latest

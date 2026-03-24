@@ -1,4 +1,12 @@
 repos:
+  - repo: local
+    hooks:
+      - id: file-length-limit
+        name: File length limit (400 lines)
+        language: python
+        entry: python scripts/check_file_length.py
+        types: [python]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.4
     hooks:
