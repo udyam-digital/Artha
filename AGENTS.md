@@ -16,7 +16,7 @@ The project is analysis-only. Do not add auto-trading or order-placement behavio
 - `mcp_server.py`: Artha MCP server entrypoint — exposes read-only analysis as MCP tools
 - `application/agent.py`: `ArthaAgent` loop, prompt construction, tool handling, and final report parsing
 - `application/orchestrator.py`: verdict-driven run pipeline — the main `run` entrypoint
-- `application/research.py`: deep-research orchestration for one holding-level sub-agent per equity and MF holding
+- `application/research_orchestrator.py`: deep-research orchestration for one holding-level sub-agent per equity and MF holding
 - `kite/tools.py`: Kite MCP client, tool execution, native tool definitions, and helper parsing
 - `kite/runtime.py`: hosted Kite auth/session checks plus fresh equity and MF snapshot sync
 - `persistence/store.py`: local snapshot and research artifact persistence
@@ -50,7 +50,10 @@ If report parsing fails, the app falls back to a rebalance-oriented report with 
 .venv/bin/python main.py run
 .venv/bin/python main.py run --ticker KPITTECH
 .venv/bin/python main.py run --rebalance-only
+.venv/bin/python main.py analyst --ticker BSE
+.venv/bin/python main.py compare-providers --ticker BSE
 .venv/bin/python main.py research
+.venv/bin/python main.py usage-report --last 10
 ```
 
 ## Environment
@@ -100,7 +103,7 @@ Notes:
 - Keep passive instruments out of equity rebalance actions as defined in `rebalance.py`.
 - Do not include MF holdings in equity rebalance actions.
 - Persist MF holdings locally even though they are excluded from rebalancing.
-- For full runs, retain the deep-research behavior built around `web_search`.
+- For full runs and research flows, retain the Tavily-backed research behavior built around `tavily_search`.
 - Keep final LLM output wrapped in `<artha_report>...</artha_report>` and valid against `PortfolioReport`.
 - Prefer graceful degradation over crashes when tool output is partial or malformed.
 
@@ -218,6 +221,8 @@ Focused test runs:
 .venv/bin/python -m pytest tests/test_agent.py
 .venv/bin/python -m pytest tests/test_tools.py
 .venv/bin/python -m pytest tests/test_rebalance.py
+.venv/bin/python -m pytest tests/test_mcp_server.py
+.venv/bin/python -m pytest tests/test_api_run.py
 ```
 
 ## Common Change Patterns
