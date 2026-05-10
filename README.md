@@ -266,3 +266,4 @@ For this repository, the highest-value skills are:
 - `create-readme` to keep repository guidance accurate
 - `dependabot`, `codeql`, and `secret-scanning` for repository guardrails
 - the three `suggest-awesome-*` skills for recommending missing Copilot assets without installing them blindly
+
